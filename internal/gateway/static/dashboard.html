@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CC Gateway — Admin Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d2e; --surface2: #242840;
+    --border: #2e3354; --text: #e1e4f0; --text2: #8b90b0;
+    --accent: #6c5ce7; --accent2: #a29bfe; --green: #00cec9;
+    --red: #ff6b6b; --orange: #ffa502; --blue: #74b9ff;
+    --radius: 12px; --shadow: 0 4px 24px rgba(0,0,0,.35);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Inter','SF Pro',system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+  a { color:var(--accent2); text-decoration:none; }
+
+  /* Layout */
+  .app { display:flex; min-height:100vh; }
+  .sidebar { width:220px; background:var(--surface); border-right:1px solid var(--border); padding:24px 0; flex-shrink:0; position:fixed; top:0; left:0; bottom:0; overflow-y:auto; z-index:10; }
+  .sidebar h1 { font-size:16px; font-weight:700; padding:0 20px 20px; color:var(--accent2); letter-spacing:.5px; }
+  .sidebar .version { font-size:11px; color:var(--text2); display:block; padding:0 20px; margin-top:-14px; margin-bottom:16px; }
+  .nav-item { display:flex; align-items:center; gap:10px; padding:10px 20px; cursor:pointer; color:var(--text2); font-size:14px; transition:all .2s; border-left:3px solid transparent; }
+  .nav-item:hover { background:var(--surface2); color:var(--text); }
+  .nav-item.active { color:var(--accent2); background:rgba(108,92,231,.1); border-left-color:var(--accent); }
+  .nav-item .icon { width:18px; text-align:center; font-size:15px; }
+  .main { margin-left:220px; flex:1; padding:28px 32px; }
+
+  /* Header */
+  .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; }
+  .page-header h2 { font-size:22px; font-weight:600; }
+  .badge { display:inline-block; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:600; }
+  .badge-green { background:rgba(0,206,201,.15); color:var(--green); }
+  .badge-red { background:rgba(255,107,107,.15); color:var(--red); }
+  .badge-orange { background:rgba(255,165,2,.15); color:var(--orange); }
+
+  /* Cards */
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:16px; margin-bottom:28px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; transition:transform .2s,box-shadow .2s; }
+  .card:hover { transform:translateY(-2px); box-shadow:var(--shadow); }
+  .card .label { font-size:12px; color:var(--text2); text-transform:uppercase; letter-spacing:.8px; margin-bottom:8px; }
+  .card .value { font-size:28px; font-weight:700; }
+  .card .sub { font-size:12px; color:var(--text2); margin-top:4px; }
+
+  /* Table */
+  .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); margin-bottom:24px; overflow:hidden; }
+  .panel-head { padding:16px 20px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+  .panel-head h3 { font-size:15px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { padding:10px 20px; text-align:left; font-size:13px; }
+  th { color:var(--text2); font-weight:500; text-transform:uppercase; letter-spacing:.5px; font-size:11px; border-bottom:1px solid var(--border); }
+  tr:not(:last-child) td { border-bottom:1px solid rgba(46,51,84,.5); }
+  tr:hover td { background:rgba(108,92,231,.04); }
+
+  /* Forms */
+  .form-group { margin-bottom:16px; }
+  .form-group label { display:block; font-size:12px; color:var(--text2); margin-bottom:6px; text-transform:uppercase; letter-spacing:.5px; }
+  input[type="text"],input[type="number"],select,textarea { width:100%; padding:10px 14px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:13px; outline:none; transition:border-color .2s; }
+  input:focus,select:focus,textarea:focus { border-color:var(--accent); }
+  textarea { resize:vertical; min-height:80px; font-family:monospace; }
+
+  /* Buttons */
+  .btn { padding:8px 18px; border-radius:8px; border:none; font-size:13px; font-weight:600; cursor:pointer; transition:all .2s; }
+  .btn-primary { background:var(--accent); color:#fff; }
+  .btn-primary:hover { background:var(--accent2); }
+  .btn-danger { background:var(--red); color:#fff; }
+  .btn-danger:hover { opacity:.85; }
+  .btn-outline { background:transparent; border:1px solid var(--border); color:var(--text); }
+  .btn-outline:hover { border-color:var(--accent); color:var(--accent2); }
+  .btn-sm { padding:5px 12px; font-size:12px; }
+
+  /* Toggle */
+  .toggle { position:relative; width:44px; height:24px; cursor:pointer; }
+  .toggle input { display:none; }
+  .toggle .slider { position:absolute; inset:0; background:var(--surface2); border-radius:12px; border:1px solid var(--border); transition:.3s; }
+  .toggle .slider:before { content:''; position:absolute; width:18px; height:18px; left:2px; top:2px; background:var(--text2); border-radius:50%; transition:.3s; }
+  .toggle input:checked+.slider { background:var(--accent); border-color:var(--accent); }
+  .toggle input:checked+.slider:before { transform:translateX(20px); background:#fff; }
+
+  /* Status dot */
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; }
+  .dot-green { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .dot-red { background:var(--red); box-shadow:0 0 6px var(--red); }
+  .dot-orange { background:var(--orange); }
+
+  /* Toast */
+  .toast { position:fixed; top:20px; right:20px; padding:12px 20px; border-radius:8px; font-size:13px; font-weight:500; z-index:100; opacity:0; transform:translateY(-10px); transition:all .3s; pointer-events:none; }
+  .toast.show { opacity:1; transform:translateY(0); }
+  .toast-ok { background:rgba(0,206,201,.9); color:#fff; }
+  .toast-err { background:rgba(255,107,107,.9); color:#fff; }
+
+  /* Sections */
+  .section { display:none; }
+  .section.active { display:block; }
+
+  /* JSON editor */
+  .json-editor { font-family:'JetBrains Mono','Fira Code',monospace; font-size:12px; min-height:200px; }
+
+  /* Responsive */
+  @media(max-width:768px) {
+    .sidebar { width:60px; } .sidebar h1,.sidebar .version,.nav-item span:not(.icon) { display:none; }
+    .main { margin-left:60px; padding:16px; }
+    .cards { grid-template-columns:1fr; }
+  }
+
+  /* Animations */
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .section.active { animation:fadeIn .3s ease; }
+  .loading { display:inline-block; width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; }
+  @keyframes spin { to{transform:rotate(360deg)} }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="sidebar">
+    <h1>⚡ CC Gateway</h1>
+    <span class="version">Admin Dashboard</span>
+    <div class="nav-item active" data-tab="overview"><span class="icon">📊</span><span>Overview</span></div>
+    <div class="nav-item" data-tab="settings"><span class="icon">⚙️</span><span>Settings</span></div>
+    <div class="nav-item" data-tab="models"><span class="icon">🤖</span><span>Models</span></div>
+    <div class="nav-item" data-tab="tools"><span class="icon">🔧</span><span>Tools</span></div>
+    <div class="nav-item" data-tab="skills"><span class="icon">✨</span><span>Skills</span></div>
+    <div class="nav-item" data-tab="rules"><span class="icon">📜</span><span>Rules</span></div>
+    <div class="nav-item" data-tab="cost"><span class="icon">💰</span><span>Cost</span></div>
+    <div class="nav-item" data-tab="eval"><span class="icon">🧠</span><span>Eval</span></div>
+  </nav>
+  <main class="main">
+    <!-- OVERVIEW -->
+    <section id="sec-overview" class="section active">
+      <div class="page-header"><h2>System Overview</h2><span class="badge badge-green" id="health-badge">● Healthy</span></div>
+      <div class="cards" id="overview-cards"></div>
+      <div class="panel">
+        <div class="panel-head"><h3>Adapter Status</h3><button class="btn btn-outline btn-sm" onclick="loadScheduler()">Refresh</button></div>
+        <table><thead><tr><th>Adapter</th><th>Status</th><th>Model</th><th>Requests</th><th>Failures</th></tr></thead><tbody id="adapter-tbody"></tbody></table>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="sec-settings" class="section">
+      <div class="page-header"><h2>Runtime Settings</h2><button class="btn btn-primary" onclick="saveSettings()">Save Changes</button></div>
+      <div class="panel" style="padding:20px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+          <div class="form-group"><label>Reflection Passes</label><input type="number" id="set-reflection" min="0" max="5"></div>
+          <div class="form-group"><label>Timeout (ms)</label><input type="number" id="set-timeout" min="1000" max="120000"></div>
+          <div class="form-group"><label>Parallel Candidates</label><input type="number" id="set-candidates" min="1" max="10"></div>
+          <div class="form-group"><label>Max Retries</label><input type="number" id="set-retries" min="0" max="10"></div>
+          <div class="form-group"><label>Tool Loop Mode</label>
+            <select id="set-toolmode"><option value="client_loop">Client Loop</option><option value="server_loop">Server Loop</option></select>
+          </div>
+          <div class="form-group"><label>Tool Loop Max Steps</label><input type="number" id="set-maxsteps" min="1" max="50"></div>
+          <div class="form-group" style="display:flex;align-items:center;gap:12px;margin-top:20px">
+            <label style="margin:0">Enable Response Judge</label>
+            <label class="toggle"><input type="checkbox" id="set-judge"><span class="slider"></span></label>
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;gap:12px;margin-top:20px">
+            <label style="margin:0">Allow Experimental Tools</label>
+            <label class="toggle"><input type="checkbox" id="set-experimental"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:20px"><label>Mode → Model Overrides (JSON)</label><textarea class="json-editor" id="set-mode-models"></textarea></div>
+        <div class="form-group"><label>Prompt Prefixes (JSON)</label><textarea class="json-editor" id="set-prompts"></textarea></div>
+        <div class="form-group"><label>Mode Routes (JSON)</label><textarea class="json-editor" id="set-routes"></textarea></div>
+      </div>
+    </section>
+
+    <!-- MODELS -->
+    <section id="sec-models" class="section">
+      <div class="page-header"><h2>Model Routing</h2></div>
+      <div class="cards" id="model-cards"></div>
+      <div class="panel">
+        <div class="panel-head"><h3>Active Mode Routes</h3></div>
+        <table><thead><tr><th>Mode</th><th>Model Chain</th></tr></thead><tbody id="route-tbody"></tbody></table>
+      </div>
+    </section>
+
+    <!-- TOOLS -->
+    <section id="sec-tools" class="section">
+      <div class="page-header"><h2>Tool Catalog</h2><button class="btn btn-outline btn-sm" onclick="loadTools()">Refresh</button></div>
+      <div class="panel">
+        <table><thead><tr><th>Name</th><th>Category</th><th>Status</th></tr></thead><tbody id="tools-tbody"></tbody></table>
+      </div>
+    </section>
+
+    <!-- SKILLS -->
+    <section id="sec-skills" class="section">
+      <div class="page-header"><h2>Skill Engine</h2><button class="btn btn-primary" onclick="showSkillForm()">+ Register Skill</button></div>
+      <div class="panel" id="skill-form-panel" style="display:none;padding:20px;margin-bottom:16px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div class="form-group"><label>Name</label><input type="text" id="skill-name" placeholder="my_skill"></div>
+          <div class="form-group"><label>Description</label><input type="text" id="skill-desc" placeholder="What this skill does"></div>
+        </div>
+        <div class="form-group"><label>Template</label><textarea id="skill-template" placeholder="Hello {{name}}, your task is {{task}}"></textarea></div>
+        <div class="form-group"><label>Parameters (JSON, e.g. {"name":"default_val"})</label><textarea id="skill-params" style="min-height:60px">{}</textarea></div>
+        <div style="display:flex;gap:8px"><button class="btn btn-primary" onclick="registerSkill()">Register</button><button class="btn btn-outline" onclick="hideSkillForm()">Cancel</button></div>
+      </div>
+      <div class="panel">
+        <table><thead><tr><th>Name</th><th>Description</th><th>Params</th><th>Actions</th></tr></thead><tbody id="skills-tbody"></tbody></table>
+      </div>
+    </section>
+
+    <!-- RULES -->
+    <section id="sec-rules" class="section">
+      <div class="page-header"><h2>Rules DSL</h2><button class="btn btn-primary" onclick="showRuleForm()">+ Add Rule</button></div>
+      <div class="panel" id="rule-form-panel" style="display:none;padding:20px;margin-bottom:16px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:16px">
+          <div class="form-group"><label>Name</label><input type="text" id="rule-name" placeholder="rule_name"></div>
+          <div class="form-group"><label>Pattern (glob)</label><input type="text" id="rule-pattern" placeholder="*.go"></div>
+          <div class="form-group"><label>Action</label><select id="rule-action"><option value="allow">Allow</option><option value="ask">Ask</option><option value="deny">Deny</option></select></div>
+          <div class="form-group"><label>Priority</label><input type="number" id="rule-priority" value="0" min="-100" max="100"></div>
+        </div>
+        <div class="form-group"><label>Scope</label><input type="text" id="rule-scope" placeholder="global"></div>
+        <div style="display:flex;gap:8px"><button class="btn btn-primary" onclick="addRule()">Add Rule</button><button class="btn btn-outline" onclick="hideRuleForm()">Cancel</button></div>
+      </div>
+      <div class="panel">
+        <table><thead><tr><th>Name</th><th>Pattern</th><th>Action</th><th>Priority</th><th>Scope</th><th>Actions</th></tr></thead><tbody id="rules-tbody"></tbody></table>
+      </div>
+    </section>
+
+    <!-- COST -->
+    <section id="sec-cost" class="section">
+      <div class="page-header"><h2>Cost Tracking</h2><button class="btn btn-outline btn-sm" onclick="loadCost()">Refresh</button></div>
+      <div class="cards" id="cost-cards"></div>
+      <div class="panel">
+        <div class="panel-head"><h3>Per-Model Breakdown</h3></div>
+        <table><thead><tr><th>Model</th><th>Requests</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost (USD)</th></tr></thead><tbody id="cost-tbody"></tbody></table>
+      </div>
+    </section>
+
+    <!-- EVAL -->
+    <section id="sec-eval" class="section">
+      <div class="page-header"><h2>Intelligence Evaluation</h2><button class="btn btn-primary" onclick="runEval()">Run Evaluation</button></div>
+      <div class="panel" style="padding:20px">
+        <div class="form-group"><label>Model</label><input type="text" id="eval-model" placeholder="Model to evaluate (e.g. claude-3.5-sonnet)"></div>
+        <div class="form-group"><label>Prompt</label><textarea id="eval-prompt" placeholder="Enter a test prompt to evaluate..."></textarea></div>
+        <div class="form-group"><label>Response (leave empty to auto-generate)</label><textarea id="eval-response" placeholder="Paste the model's response, or leave empty"></textarea></div>
+      </div>
+      <div id="eval-results" style="display:none">
+        <div class="cards" id="eval-cards"></div>
+        <div class="panel" style="padding:20px"><h3 style="margin-bottom:12px">Analysis</h3><div id="eval-analysis" style="white-space:pre-wrap;font-size:13px;color:var(--text2);line-height:1.6"></div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const BASE = '';
+const adminToken = localStorage.getItem('cc_admin_token') || '';
+const headers = ()=>{ const h={'Content-Type':'application/json'}; if(adminToken) h['x-admin-token']=adminToken; return h; };
+
+// Navigation
+document.querySelectorAll('.nav-item').forEach(el=>{
+  el.addEventListener('click',()=>{
+    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+    document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('sec-'+el.dataset.tab).classList.add('active');
+    const loaders = {overview:loadOverview,settings:loadSettings,models:loadModels,tools:loadTools,skills:loadSkills,rules:loadRules,cost:loadCost};
+    if(loaders[el.dataset.tab]) loaders[el.dataset.tab]();
+  });
+});
+
+function toast(msg,ok=true){ const t=document.getElementById('toast'); t.className='toast '+(ok?'toast-ok':'toast-err')+' show'; t.textContent=msg; setTimeout(()=>t.classList.remove('show'),3000); }
+
+async function api(path,opts={}){
+  try{
+    const r=await fetch(BASE+path,{headers:headers(),...opts});
+    if(!r.ok) throw new Error(await r.text());
+    if(r.status===204) return {};
+    return r.json();
+  }catch(e){ toast(e.message,false); throw e; }
+}
+
+// OVERVIEW
+async function loadOverview(){
+  try{
+    const [health,settings,sched]=await Promise.all([
+      fetch(BASE+'/healthz').then(r=>r.json()).catch(()=>({ok:false})),
+      api('/admin/settings').catch(()=>({})),
+      api('/admin/scheduler').catch(()=>({scheduler:{}}))
+    ]);
+    const b=document.getElementById('health-badge');
+    b.textContent=health.ok?'● Healthy':'● Unhealthy';
+    b.className='badge '+(health.ok?'badge-green':'badge-red');
+
+    const s=settings||{};
+    const cards=[
+      {label:'Reflection Passes',value:s.routing?.reflection_passes||1,sub:'per request'},
+      {label:'Parallel Candidates',value:s.routing?.parallel_candidates||1,sub:'per request'},
+      {label:'Tool Loop',value:s.tool_loop?.mode||'client_loop',sub:'max '+( s.tool_loop?.max_steps||4)+' steps'},
+      {label:'Timeout',value:((s.routing?.timeout_ms||30000)/1000)+'s',sub:'per upstream call'},
+    ];
+    document.getElementById('overview-cards').innerHTML=cards.map(c=>`<div class="card"><div class="label">${c.label}</div><div class="value">${c.value}</div><div class="sub">${c.sub}</div></div>`).join('');
+
+    loadScheduler(sched);
+  }catch(e){console.error(e);}
+}
+
+function loadScheduler(data){
+  const render=d=>{
+    const s=d?.scheduler||d||{};
+    const adapters=s.adapters||s.accounts||[];
+    if(!Array.isArray(adapters)){document.getElementById('adapter-tbody').innerHTML='<tr><td colspan="5" style="color:var(--text2)">No adapter data available</td></tr>';return;}
+    document.getElementById('adapter-tbody').innerHTML=adapters.map(a=>`<tr>
+      <td><span class="dot ${a.cooldown_until?'dot-orange':(a.healthy!==false?'dot-green':'dot-red')}"></span>${a.name||a.id||'—'}</td>
+      <td>${a.cooldown_until?'Cooldown':(a.healthy!==false?'Active':'Failed')}</td>
+      <td style="font-family:monospace;font-size:12px">${a.model||'—'}</td>
+      <td>${a.request_count||0}</td>
+      <td>${a.failure_count||0}</td>
+    </tr>`).join('');
+  };
+  if(data){render(data);return;}
+  api('/admin/scheduler').then(render).catch(()=>{});
+}
+
+// SETTINGS
+async function loadSettings(){
+  try{
+    const s=await api('/admin/settings');
+    document.getElementById('set-reflection').value=s.routing?.reflection_passes||1;
+    document.getElementById('set-timeout').value=s.routing?.timeout_ms||30000;
+    document.getElementById('set-candidates').value=s.routing?.parallel_candidates||1;
+    document.getElementById('set-retries').value=s.routing?.retries||1;
+    document.getElementById('set-toolmode').value=s.tool_loop?.mode||'client_loop';
+    document.getElementById('set-maxsteps').value=s.tool_loop?.max_steps||4;
+    document.getElementById('set-judge').checked=!!s.routing?.enable_response_judge;
+    document.getElementById('set-experimental').checked=!!s.allow_experimental_tools;
+    document.getElementById('set-mode-models').value=JSON.stringify(s.mode_models||{},null,2);
+    document.getElementById('set-prompts').value=JSON.stringify(s.prompt_prefixes||{},null,2);
+    document.getElementById('set-routes').value=JSON.stringify(s.routing?.mode_routes||{},null,2);
+  }catch(e){}
+}
+
+async function saveSettings(){
+  try{
+    const body={
+      use_mode_model_override:Object.keys(JSON.parse(document.getElementById('set-mode-models').value||'{}')).length>0,
+      mode_models:JSON.parse(document.getElementById('set-mode-models').value||'{}'),
+      prompt_prefixes:JSON.parse(document.getElementById('set-prompts').value||'{}'),
+      allow_experimental_tools:document.getElementById('set-experimental').checked,
+      allow_unknown_tools:true,
+      routing:{
+        retries:+document.getElementById('set-retries').value,
+        reflection_passes:+document.getElementById('set-reflection').value,
+        timeout_ms:+document.getElementById('set-timeout').value,
+        parallel_candidates:+document.getElementById('set-candidates').value,
+        enable_response_judge:document.getElementById('set-judge').checked,
+        mode_routes:JSON.parse(document.getElementById('set-routes').value||'{}')
+      },
+      tool_loop:{mode:document.getElementById('set-toolmode').value,max_steps:+document.getElementById('set-maxsteps').value}
+    };
+    await api('/admin/settings',{method:'PUT',body:JSON.stringify(body)});
+    toast('Settings saved');
+  }catch(e){ toast('Failed to save: '+e.message,false); }
+}
+
+// MODELS
+async function loadModels(){
+  try{
+    const s=await api('/admin/settings');
+    const modes=s.mode_models||{};
+    const mc=Object.entries(modes);
+    document.getElementById('model-cards').innerHTML=mc.length?mc.map(([m,v])=>`<div class="card"><div class="label">${m}</div><div class="value" style="font-size:16px;font-family:monospace">${v}</div></div>`).join(''):'<div class="card"><div class="label">Default</div><div class="value" style="font-size:14px;color:var(--text2)">No mode overrides configured</div></div>';
+    const routes=s.routing?.mode_routes||{};
+    const re=Object.entries(routes);
+    document.getElementById('route-tbody').innerHTML=re.length?re.map(([m,chain])=>`<tr><td>${m}</td><td style="font-family:monospace;font-size:12px">${chain.join(' → ')}</td></tr>`).join(''):'<tr><td colspan="2" style="color:var(--text2)">No routes configured</td></tr>';
+  }catch(e){}
+}
+
+// TOOLS
+async function loadTools(){
+  try{
+    const d=await api('/admin/tools');
+    const tools=d.tools||[];
+    document.getElementById('tools-tbody').innerHTML=tools.length?tools.map(t=>`<tr>
+      <td style="font-family:monospace">${t.name}</td>
+      <td><span class="badge ${t.category==='supported'?'badge-green':t.category==='experimental'?'badge-orange':'badge-red'}">${t.category||'unknown'}</span></td>
+      <td>${t.enabled!==false?'Enabled':'Disabled'}</td>
+    </tr>`).join(''):'<tr><td colspan="3" style="color:var(--text2)">No tools configured</td></tr>';
+  }catch(e){}
+}
+
+// SKILLS — local state since no /admin/skills yet
+let localSkills=[];
+async function loadSkills(){
+  try{
+    const d=await api('/v1/cc/skills');
+    localSkills=d.data||[];
+    renderSkills();
+  }catch(e){ renderSkills(); }
+}
+function renderSkills(){
+  document.getElementById('skills-tbody').innerHTML=localSkills.length?localSkills.map(s=>`<tr>
+    <td style="font-family:monospace">${s.name}</td>
+    <td>${s.description||'—'}</td>
+    <td style="font-family:monospace;font-size:12px">${Object.keys(s.parameters||{}).join(', ')||'none'}</td>
+    <td><button class="btn btn-danger btn-sm" onclick="deleteSkill('${s.name}')">Delete</button></td>
+  </tr>`).join(''):'<tr><td colspan="4" style="color:var(--text2)">No skills registered</td></tr>';
+}
+function showSkillForm(){document.getElementById('skill-form-panel').style.display='block';}
+function hideSkillForm(){document.getElementById('skill-form-panel').style.display='none';}
+
+async function registerSkill(){
+  try{
+    const body={name:document.getElementById('skill-name').value,description:document.getElementById('skill-desc').value,template:document.getElementById('skill-template').value,parameters:JSON.parse(document.getElementById('skill-params').value||'{}')};
+    await api('/v1/cc/skills',{method:'POST',body:JSON.stringify(body)});
+    toast('Skill registered');
+    hideSkillForm();
+    loadSkills();
+  }catch(e){}
+}
+async function deleteSkill(name){
+  try{await fetch(BASE+'/v1/cc/skills/'+name,{method:'DELETE',headers:headers()});toast('Skill deleted');loadSkills();}catch(e){}
+}
+
+// RULES — local state
+let localRules=[];
+function loadRules(){renderRules();}
+function renderRules(){
+  document.getElementById('rules-tbody').innerHTML=localRules.length?localRules.map((r,i)=>`<tr>
+    <td style="font-family:monospace">${r.name}</td>
+    <td style="font-family:monospace">${r.pattern}</td>
+    <td><span class="badge ${r.action==='allow'?'badge-green':r.action==='deny'?'badge-red':'badge-orange'}">${r.action}</span></td>
+    <td>${r.priority}</td>
+    <td>${r.scope||'global'}</td>
+    <td><button class="btn btn-danger btn-sm" onclick="removeRule(${i})">Remove</button></td>
+  </tr>`).join(''):'<tr><td colspan="6" style="color:var(--text2)">No rules configured</td></tr>';
+}
+function showRuleForm(){document.getElementById('rule-form-panel').style.display='block';}
+function hideRuleForm(){document.getElementById('rule-form-panel').style.display='none';}
+function addRule(){
+  localRules.push({name:document.getElementById('rule-name').value,pattern:document.getElementById('rule-pattern').value,action:document.getElementById('rule-action').value,priority:+document.getElementById('rule-priority').value,scope:document.getElementById('rule-scope').value||'global'});
+  localRules.sort((a,b)=>b.priority-a.priority);
+  toast('Rule added');hideRuleForm();renderRules();
+}
+function removeRule(i){localRules.splice(i,1);renderRules();}
+
+// COST
+async function loadCost(){
+  try{
+    const d=await api('/admin/cost');
+    const total=d.total_cost_usd||0;
+    const budget=d.budget_limit_usd||0;
+    const models=d.per_model||{};
+    document.getElementById('cost-cards').innerHTML=`
+      <div class="card"><div class="label">Total Cost</div><div class="value">$${total.toFixed(4)}</div></div>
+      <div class="card"><div class="label">Budget Limit</div><div class="value">${budget>0?'$'+budget.toFixed(2):'No Limit'}</div><div class="sub">${budget>0?((total/budget*100).toFixed(1)+'% used'):'unlimited'}</div></div>
+      <div class="card"><div class="label">Models Tracked</div><div class="value">${Object.keys(models).length}</div></div>
+    `;
+    const rows=Object.entries(models);
+    document.getElementById('cost-tbody').innerHTML=rows.length?rows.map(([m,v])=>`<tr>
+      <td style="font-family:monospace">${m}</td><td>${v.requests||0}</td><td>${v.input_tokens||0}</td><td>${v.output_tokens||0}</td><td>$${(v.cost||0).toFixed(4)}</td>
+    </tr>`).join(''):'<tr><td colspan="5" style="color:var(--text2)">No cost data yet</td></tr>';
+  }catch(e){
+    document.getElementById('cost-cards').innerHTML='<div class="card"><div class="label">Status</div><div class="value" style="font-size:14px;color:var(--text2)">Cost tracking endpoint not configured</div></div>';
+    document.getElementById('cost-tbody').innerHTML='';
+  }
+}
+
+// EVAL
+async function runEval(){
+  const model=document.getElementById('eval-model').value;
+  const prompt=document.getElementById('eval-prompt').value;
+  const response=document.getElementById('eval-response').value;
+  if(!prompt){toast('Please enter a prompt',false);return;}
+  try{
+    const d=await api('/v1/cc/eval',{method:'POST',body:JSON.stringify({model,prompt,response:response||undefined})});
+    const r=d.result||d;
+    document.getElementById('eval-results').style.display='block';
+    const criteria=r.criteria||{};
+    document.getElementById('eval-cards').innerHTML=`
+      <div class="card"><div class="label">Overall Score</div><div class="value" style="color:${r.score>=7?'var(--green)':r.score>=4?'var(--orange)':'var(--red)'}">${(r.score||0).toFixed(1)}/10</div></div>
+      ${Object.entries(criteria).map(([k,v])=>`<div class="card"><div class="label">${k.replace(/_/g,' ')}</div><div class="value" style="font-size:22px;color:${v>=7?'var(--green)':v>=4?'var(--orange)':'var(--red)'}">${v.toFixed(1)}</div></div>`).join('')}
+    `;
+    document.getElementById('eval-analysis').textContent=r.analysis||'No analysis available';
+    toast('Evaluation complete');
+  }catch(e){ toast('Eval failed: '+e.message,false); }
+}
+
+// Init
+loadOverview();
+</script>
+</body>
+</html>

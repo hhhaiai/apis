@@ -1,0 +1,33 @@
+{
+  "adapters": [
+    {
+      "name": "glm-search",
+      "kind": "openai",
+      "base_url": "http://0.0.0.0:5025",
+      "api_key": "free",
+      "model": "GLM-5-thinking-search",
+      "force_stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    {
+      "name": "glm-45",
+      "kind": "openai",
+      "base_url": "http://0.0.0.0:5022",
+      "api_key": "free",
+      "model": "GLM-4.5",
+      "force_stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    }
+  ],
+  "default_route": ["glm-search", "glm-45"],
+  "model_routes": {
+    "GLM-5-thinking-search": ["glm-search", "glm-45"],
+    "GLM-4.5": ["glm-45", "glm-search"],
+    "*": ["glm-search", "glm-45"]
+  }
+}
+

@@ -1,0 +1,30 @@
+{
+  "use_mode_model_override": true,
+  "mode_models": {
+    "chat": "GLM-4.5",
+    "plan": "GLM-5-thinking-search",
+    "default": "GLM-4.5"
+  },
+  "prompt_prefixes": {
+    "chat": "回答要简洁并给出可执行步骤。",
+    "plan": "先给计划，再执行，最后汇报结果。"
+  },
+  "allow_experimental_tools": false,
+  "allow_unknown_tools": true,
+  "routing": {
+    "retries": 1,
+    "reflection_passes": 1,
+    "timeout_ms": 30000,
+    "parallel_candidates": 2,
+    "enable_response_judge": true,
+    "mode_routes": {
+      "chat": ["glm-45", "glm-search"],
+      "plan": ["glm-search", "glm-45"],
+      "default": ["glm-45", "glm-search"]
+    }
+  },
+  "tool_loop": {
+    "mode": "client_loop",
+    "max_steps": 4
+  }
+}

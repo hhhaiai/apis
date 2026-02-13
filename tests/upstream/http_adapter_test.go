@@ -1,0 +1,318 @@
+package upstream_test
+
+import (
+	. "ccgateway/internal/upstream"
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"ccgateway/internal/orchestrator"
+)
+
+func TestHTTPAdapterOpenAI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer test-key" {
+			t.Fatalf("unexpected auth header: %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != "mapped-model" {
+			t.Fatalf("expected model mapped-model, got %#v", body["model"])
+		}
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) < 2 {
+			t.Fatalf("expected at least 2 messages with system injection, got %#v", body["messages"])
+		}
+
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"mapped-model",
+			"choices":[{"finish_reason":"stop","message":{"content":"ok","tool_calls":[]}}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "oa",
+		Kind:    AdapterKindOpenAI,
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	resp, err := adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "mapped-model",
+		MaxTokens: 64,
+		System:    "system prompt",
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+	if len(resp.Blocks) == 0 || resp.Blocks[0].Type != "text" {
+		t.Fatalf("unexpected blocks: %+v", resp.Blocks)
+	}
+	if resp.StopReason != "end_turn" {
+		t.Fatalf("unexpected stop reason: %q", resp.StopReason)
+	}
+}
+
+func TestHTTPAdapterOpenAIForceStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		writer := bufio.NewWriter(w)
+
+		_, _ = fmt.Fprintln(writer, `data: {"choices":[{"delta":{"content":"hel"},"finish_reason":null}]}`)
+		_, _ = fmt.Fprintln(writer)
+		_, _ = fmt.Fprintln(writer, `data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":2}}`)
+		_, _ = fmt.Fprintln(writer)
+		_, _ = fmt.Fprintln(writer, `data: [DONE]`)
+		_, _ = fmt.Fprintln(writer)
+		_ = writer.Flush()
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:          "oa-stream",
+		Kind:          AdapterKindOpenAI,
+		BaseURL:       server.URL,
+		ForceStream:   true,
+		StreamOptions: map[string]any{"include_usage": true},
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	resp, err := adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "m",
+		MaxTokens: 64,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hi"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+	if len(resp.Blocks) == 0 || resp.Blocks[0].Text != "hello" {
+		t.Fatalf("unexpected blocks: %+v", resp.Blocks)
+	}
+	if resp.Usage.InputTokens != 7 || resp.Usage.OutputTokens != 2 {
+		t.Fatalf("unexpected usage: %+v", resp.Usage)
+	}
+}
+
+func TestHTTPAdapterAnthropic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "ant-key" {
+			t.Fatalf("unexpected x-api-key: %q", got)
+		}
+		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
+			t.Fatalf("unexpected anthropic-version: %q", got)
+		}
+		if got := r.Header.Get("anthropic-beta"); got != "tools-2024-04-04" {
+			t.Fatalf("unexpected anthropic-beta: %q", got)
+		}
+
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"claude-test",
+			"content":[{"type":"text","text":"hi"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":4,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "an",
+		Kind:    AdapterKindAnthropic,
+		BaseURL: server.URL,
+		APIKey:  "ant-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	resp, err := adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "claude-test",
+		MaxTokens: 128,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hello"},
+		},
+		Headers: map[string]string{
+			"anthropic-version": "2023-06-01",
+			"anthropic-beta":    "tools-2024-04-04",
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+	if len(resp.Blocks) != 1 || resp.Blocks[0].Text != "hi" {
+		t.Fatalf("unexpected blocks: %+v", resp.Blocks)
+	}
+}
+
+func TestHTTPAdapterCanonical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/complete" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"blocks":[{"type":"text","text":"from canonical"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":1,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "ca",
+		Kind:    AdapterKindCanonical,
+		BaseURL: server.URL,
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	resp, err := adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "custom-model",
+		MaxTokens: 32,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "x"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+	if len(resp.Blocks) != 1 || !strings.Contains(resp.Blocks[0].Text, "canonical") {
+		t.Fatalf("unexpected blocks: %+v", resp.Blocks)
+	}
+}
+
+func TestHTTPAdapterGemini(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1beta/models/gem-model:generateContent" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("x-goog-api-key"); got != "gem-key" {
+			t.Fatalf("unexpected gemini key header: %q", got)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[
+				{
+					"finishReason":"STOP",
+					"content":{"parts":[{"text":"hello gemini"}]}
+				}
+			],
+			"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "gem",
+		Kind:    AdapterKindGemini,
+		BaseURL: server.URL,
+		Model:   "gem-model",
+		APIKey:  "gem-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	resp, err := adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "ignored-client-model",
+		MaxTokens: 64,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hello gemini"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+	if len(resp.Blocks) == 0 || !strings.Contains(resp.Blocks[0].Text, "gemini") {
+		t.Fatalf("unexpected blocks: %+v", resp.Blocks)
+	}
+	if resp.StopReason != "end_turn" {
+		t.Fatalf("unexpected stop reason: %q", resp.StopReason)
+	}
+}
+
+func TestHTTPAdapterAnthropicStreamPassThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"model":"claude-upstream"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "an-stream",
+		Kind:    AdapterKindAnthropic,
+		BaseURL: server.URL,
+		APIKey:  "ant-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	events, errs := adapter.Stream(context.Background(), orchestrator.Request{
+		Model:     "claude-upstream",
+		MaxTokens: 64,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hi"},
+		},
+		Headers: map[string]string{
+			"anthropic-version": "2023-06-01",
+		},
+	})
+
+	got := []orchestrator.StreamEvent{}
+	for ev := range events {
+		got = append(got, ev)
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 stream events, got %d", len(got))
+	}
+	if !got[0].PassThrough || got[0].RawEvent != "message_start" {
+		t.Fatalf("unexpected first stream event: %+v", got[0])
+	}
+	if !strings.Contains(string(got[0].RawData), `"message_start"`) {
+		t.Fatalf("unexpected raw data: %s", string(got[0].RawData))
+	}
+}

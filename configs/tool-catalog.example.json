@@ -1,0 +1,27 @@
+[
+  {
+    "name": "get_weather",
+    "status": "supported",
+    "notes": "stable tool"
+  },
+  {
+    "name": "web_search",
+    "status": "supported",
+    "notes": "network search tool"
+  },
+  {
+    "name": "image_understanding",
+    "status": "supported",
+    "notes": "image analysis/ocr pipeline"
+  },
+  {
+    "name": "web_fetch",
+    "status": "experimental",
+    "notes": "high-latency site extraction path"
+  },
+  {
+    "name": "sql_exec",
+    "status": "unsupported",
+    "notes": "blocked for safety"
+  }
+]
