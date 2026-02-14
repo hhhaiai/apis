@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CC Gateway</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --card: #121a33;
+      --text: #e8eeff;
+      --muted: #9da9cf;
+      --accent: #5b8cff;
+      --warn: #ffcc66;
+      --border: #2a3561;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% 10%, rgba(91, 140, 255, 0.22), transparent 38%),
+        radial-gradient(circle at 85% 0%, rgba(112, 231, 183, 0.12), transparent 35%),
+        var(--bg);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .wrap {
+      width: min(980px, 100%);
+      display: grid;
+      gap: 16px;
+    }
+    .card {
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 14px;
+      padding: 18px;
+    }
+    h1, h2 {
+      margin: 0 0 10px;
+      letter-spacing: 0.2px;
+    }
+    p { margin: 8px 0; color: var(--muted); line-height: 1.6; }
+    ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+    li { margin: 6px 0; }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .btn {
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 14px;
+      color: #fff;
+      text-decoration: none;
+      background: var(--accent);
+    }
+    .btn:hover { opacity: 0.92; }
+    .btn-outline {
+      background: transparent;
+      border-color: var(--border);
+      color: var(--text);
+    }
+    .warn {
+      border-left: 4px solid var(--warn);
+      background: rgba(255, 204, 102, 0.12);
+      color: #ffe3a1;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+    .mono {
+      font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      color: #b9caff;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <h1>CC Gateway 控制台</h1>
+      <p>这是 API 网关入口页面，包含文档说明与后台管理入口。</p>
+      <p>This is the gateway landing page with docs and the admin entry.</p>
+      <div class="row">
+        <a class="btn" href="/admin/">进入后台 / Open Admin</a>
+        <a class="btn btn-outline" href="/healthz">健康检查 / Health</a>
+      </div>
+      <div class="warn">
+        默认后台密码（admin token）为 <span class="mono">{{DEFAULT_ADMIN_TOKEN}}</span>。<br />
+        Default admin token is <span class="mono">{{DEFAULT_ADMIN_TOKEN}}</span>. Change <span class="mono">ADMIN_TOKEN</span> in production.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>快速说明 / Quick Notes</h2>
+      <ul>
+        <li>Claude Code 协议入口: <span class="mono">/v1/messages</span> 与 <span class="mono">/v1/chat/completions</span></li>
+        <li>扩展能力: MCP / Plugins / Agent Teams / Subagents / Plans / Todos / Skills</li>
+        <li>后台路径: <span class="mono">/admin/</span>，登录后可配置模型调度、规则、工具与流程</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ccgateway/internal/agentteam"
 	"ccgateway/internal/ccevent"
 	"ccgateway/internal/ccrun"
 	"ccgateway/internal/eval"
@@ -17,10 +18,12 @@ import (
 	"ccgateway/internal/modelmap"
 	"ccgateway/internal/orchestrator"
 	"ccgateway/internal/plan"
+	"ccgateway/internal/plugin"
 	"ccgateway/internal/policy"
 	"ccgateway/internal/runlog"
 	"ccgateway/internal/session"
 	"ccgateway/internal/settings"
+	"ccgateway/internal/subagent"
 	"ccgateway/internal/todo"
 	"ccgateway/internal/toolcatalog"
 	"ccgateway/internal/toolruntime"
@@ -38,7 +41,10 @@ type Dependencies struct {
 	TodoStore       TodoStore
 	PlanStore       PlanStore
 	EventStore      EventStore
+	TeamStore       TeamStore
+	SubagentStore   SubagentStore
 	MCPRegistry     MCPRegistry
+	PluginStore     PluginStore
 	SkillEngine     SkillEngine
 	CostTracker     CostTracker
 	Evaluator       *eval.Evaluator
@@ -89,6 +95,27 @@ type EventStore interface {
 	Subscribe(filter ccevent.ListFilter) (<-chan ccevent.Event, func())
 }
 
+type TeamStore interface {
+	Create(in agentteam.CreateInput) (agentteam.TeamInfo, error)
+	Get(teamID string) (agentteam.TeamInfo, bool)
+	List(limit int) []agentteam.TeamInfo
+	AddAgent(teamID string, in agentteam.Agent) (agentteam.Agent, error)
+	ListAgents(teamID string) ([]agentteam.Agent, error)
+	AddTask(teamID string, in agentteam.CreateTaskInput) (agentteam.Task, error)
+	ListTasks(teamID string) ([]agentteam.Task, error)
+	SendMessage(teamID, from, to, content string) (agentteam.Message, error)
+	ReadMailbox(teamID, agentID string) ([]agentteam.Message, error)
+	Orchestrate(ctx context.Context, teamID string) error
+}
+
+type SubagentStore interface {
+	Get(id string) (subagent.Agent, bool)
+	List(parentID string) []subagent.Agent
+	Terminate(id string) error
+	TerminateWithMeta(id, by, reason string) (subagent.Agent, error)
+	Delete(id, by, reason string) (subagent.Agent, error)
+}
+
 type MCPRegistry interface {
 	Register(in mcpregistry.RegisterInput) (mcpregistry.Server, error)
 	Update(id string, in mcpregistry.UpdateInput) (mcpregistry.Server, error)
@@ -100,6 +127,15 @@ type MCPRegistry interface {
 	ListTools(ctx context.Context, id string) ([]mcpregistry.Tool, error)
 	CallTool(ctx context.Context, id, name string, input map[string]any) (mcpregistry.ToolCallResult, error)
 	CallToolAny(ctx context.Context, name string, input map[string]any) (mcpregistry.ToolCallResult, error)
+}
+
+type PluginStore interface {
+	Install(p plugin.Plugin) error
+	Uninstall(name string) error
+	Get(name string) (plugin.Plugin, bool)
+	List() []plugin.Plugin
+	Enable(name string) error
+	Disable(name string) error
 }
 
 // CostTracker tracks per-model, per-session costs with optional budget.
@@ -119,7 +155,10 @@ type server struct {
 	todoStore       TodoStore
 	planStore       PlanStore
 	eventStore      EventStore
+	teamStore       TeamStore
+	subagentStore   SubagentStore
 	mcpRegistry     MCPRegistry
+	pluginStore     PluginStore
 	skillEngine     SkillEngine
 	costTracker     CostTracker
 	evaluator       *eval.Evaluator
@@ -156,7 +195,10 @@ func NewRouter(deps Dependencies) http.Handler {
 		todoStore:       deps.TodoStore,
 		planStore:       deps.PlanStore,
 		eventStore:      deps.EventStore,
+		teamStore:       deps.TeamStore,
+		subagentStore:   deps.SubagentStore,
 		mcpRegistry:     deps.MCPRegistry,
+		pluginStore:     deps.PluginStore,
 		skillEngine:     deps.SkillEngine,
 		costTracker:     deps.CostTracker,
 		evaluator:       deps.Evaluator,
@@ -167,6 +209,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleRootHome)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/v1/messages", s.handleMessages)
 	mux.HandleFunc("/v1/messages/count_tokens", s.handleCountTokens)
@@ -182,14 +225,21 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/v1/cc/plans/", s.handleCCPlanByPath)
 	mux.HandleFunc("/v1/cc/events", s.handleCCEvents)
 	mux.HandleFunc("/v1/cc/events/stream", s.handleCCEventsStream)
+	mux.HandleFunc("/v1/cc/teams", s.handleCCTeams)
+	mux.HandleFunc("/v1/cc/teams/", s.handleCCTeamByPath)
+	mux.HandleFunc("/v1/cc/subagents", s.handleCCSubagents)
+	mux.HandleFunc("/v1/cc/subagents/", s.handleCCSubagentByPath)
 	mux.HandleFunc("/v1/cc/mcp/servers", s.handleCCMCPServers)
 	mux.HandleFunc("/v1/cc/mcp/servers/", s.handleCCMCPServerByPath)
+	mux.HandleFunc("/v1/cc/plugins", s.handleCCPlugins)
+	mux.HandleFunc("/v1/cc/plugins/", s.handleCCPluginByPath)
 	mux.HandleFunc("/admin/settings", s.handleAdminSettings)
 	mux.HandleFunc("/v1/cc/skills", s.handleCCSkills)
 	mux.HandleFunc("/v1/cc/skills/", s.handleCCSkillByPath)
 	mux.HandleFunc("/admin/tools", s.handleAdminTools)
 	mux.HandleFunc("/admin/scheduler", s.handleAdminScheduler)
 	mux.HandleFunc("/admin/probe", s.handleAdminProbe)
+	mux.HandleFunc("/admin/auth/status", s.handleAdminAuthStatus)
 	mux.HandleFunc("/admin/cost", s.handleAdminCost)
 	mux.HandleFunc("/admin/status", s.handleAdminStatus)
 	mux.HandleFunc("/admin/", s.handleAdminDashboard)

@@ -10,12 +10,14 @@ import (
 	"syscall"
 	"time"
 
+	"ccgateway/internal/agentteam"
 	"ccgateway/internal/ccevent"
 	"ccgateway/internal/ccrun"
 	"ccgateway/internal/gateway"
 	"ccgateway/internal/mcpregistry"
 	"ccgateway/internal/modelmap"
 	"ccgateway/internal/plan"
+	"ccgateway/internal/plugin"
 	"ccgateway/internal/policy"
 	"ccgateway/internal/probe"
 	"ccgateway/internal/runlog"
@@ -23,6 +25,7 @@ import (
 	"ccgateway/internal/session"
 	"ccgateway/internal/settings"
 	"ccgateway/internal/statepersist"
+	"ccgateway/internal/subagent"
 	"ccgateway/internal/todo"
 	"ccgateway/internal/toolcatalog"
 	"ccgateway/internal/upstream"
@@ -121,6 +124,78 @@ func main() {
 	todoStore := todo.NewStore()
 	planStore := plan.NewStore()
 	eventStore := ccevent.NewStore()
+	subagentManager := subagent.NewManager(nil)
+	subagentManager.SetLifecycleHook(func(event subagent.LifecycleEvent) {
+		switch event.EventType {
+		case "subagent.created", "subagent.running", "subagent.completed", "subagent.failed":
+		default:
+			return
+		}
+		data := map[string]any{
+			"subagent_id": event.Agent.ID,
+			"parent_id":   event.Agent.ParentID,
+			"status":      event.Agent.Status,
+			"model":       event.Agent.Model,
+			"record_text": strings.TrimSpace(event.RecordText),
+		}
+		if task := strings.TrimSpace(event.Agent.Task); task != "" {
+			data["task"] = task
+		}
+		if result := strings.TrimSpace(event.Agent.Result); result != "" {
+			data["result"] = result
+		}
+		if errText := strings.TrimSpace(event.Agent.Error); errText != "" {
+			data["error"] = errText
+		}
+		_, _ = eventStore.Append(ccevent.AppendInput{
+			EventType:  event.EventType,
+			SubagentID: event.Agent.ID,
+			Data:       data,
+		})
+		_ = runLogger.Log(runlog.Entry{
+			RunID:      event.Agent.ID,
+			Path:       "/v1/cc/subagents/lifecycle",
+			Mode:       "agent_team",
+			Stream:     false,
+			ToolCount:  0,
+			Status:     http.StatusOK,
+			RecordText: strings.TrimSpace(event.RecordText),
+		})
+	})
+	teamStore := agentteam.NewStore(agentteam.NewSubagentTaskFunc(subagentManager))
+	teamStore.SetTaskEventHook(func(event agentteam.TaskEvent) {
+		data := map[string]any{
+			"team_id":     event.TeamID,
+			"team_name":   event.TeamName,
+			"task_id":     event.Task.ID,
+			"title":       event.Task.Title,
+			"status":      event.Task.Status,
+			"assigned_to": event.Task.AssignedTo,
+			"agent_id":    event.Agent.ID,
+			"record_text": strings.TrimSpace(event.RecordText),
+		}
+		if output := strings.TrimSpace(event.Task.Result); output != "" {
+			data["output_text"] = output
+		}
+		_, _ = eventStore.Append(ccevent.AppendInput{
+			EventType: event.EventType,
+			TeamID:    event.TeamID,
+			Data:      data,
+		})
+		status := http.StatusOK
+		if strings.EqualFold(strings.TrimSpace(event.EventType), "team.task.failed") {
+			status = http.StatusBadGateway
+		}
+		_ = runLogger.Log(runlog.Entry{
+			RunID:      event.Task.ID,
+			Path:       "/v1/cc/teams/tasks/lifecycle",
+			Mode:       "agent_team",
+			Stream:     false,
+			ToolCount:  0,
+			Status:     status,
+			RecordText: strings.TrimSpace(event.RecordText),
+		})
+	})
 	persistDir := strings.TrimSpace(os.Getenv("STATE_PERSIST_DIR"))
 	if persistDir != "" {
 		backend, err := statepersist.NewFileBackend(persistDir)
@@ -144,6 +219,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid mcp registry config: %v", err)
 	}
+	pluginStore := plugin.NewManager()
+	adminToken := strings.TrimSpace(os.Getenv("ADMIN_TOKEN"))
+	if adminToken == "" {
+		adminToken = gateway.DefaultAdminToken
+		log.Printf("warning: ADMIN_TOKEN is not set; default admin token %q is enabled (change it for production)", gateway.DefaultAdminToken)
+	} else if adminToken == gateway.DefaultAdminToken {
+		log.Printf("warning: ADMIN_TOKEN is set to default value %q (change it for production)", gateway.DefaultAdminToken)
+	}
 
 	router := gateway.NewRouter(gateway.Dependencies{
 		Orchestrator:    svc,
@@ -156,10 +239,13 @@ func main() {
 		TodoStore:       todoStore,
 		PlanStore:       planStore,
 		EventStore:      eventStore,
+		TeamStore:       teamStore,
+		SubagentStore:   subagentManager,
 		MCPRegistry:     mcpStore,
+		PluginStore:     pluginStore,
 		SchedulerStatus: selector,
 		ProbeStatus:     probeRunner,
-		AdminToken:      os.Getenv("ADMIN_TOKEN"),
+		AdminToken:      adminToken,
 		RunLogger:       runLogger,
 	})
 

@@ -4,6 +4,10 @@ import (
 	_ "embed"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
 )
 
 //go:embed static/dashboard.html
@@ -14,10 +18,58 @@ func (s *server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
+	if serveBuiltAdminUI(w, r) {
+		return
+	}
 	w.Header().Set("content-type", "text/html; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(dashboardHTML)
+}
+
+func serveBuiltAdminUI(w http.ResponseWriter, r *http.Request) bool {
+	distDir := strings.TrimSpace(os.Getenv("ADMIN_UI_DIST_DIR"))
+	if distDir == "" {
+		distDir = "web/admin/dist"
+	}
+	baseAbs, err := filepath.Abs(filepath.Clean(distDir))
+	if err != nil {
+		return false
+	}
+	baseInfo, err := os.Stat(baseAbs)
+	if err != nil || !baseInfo.IsDir() {
+		return false
+	}
+	indexPath := filepath.Join(baseAbs, "index.html")
+	if _, err := os.Stat(indexPath); err != nil {
+		return false
+	}
+
+	rel := strings.TrimPrefix(r.URL.Path, "/admin/")
+	rel = strings.TrimPrefix(rel, "/")
+	rel = strings.TrimPrefix(path.Clean("/"+rel), "/")
+	if rel == "" {
+		http.ServeFile(w, r, indexPath)
+		return true
+	}
+
+	targetAbs, err := filepath.Abs(filepath.Join(baseAbs, filepath.FromSlash(rel)))
+	if err != nil {
+		http.NotFound(w, r)
+		return true
+	}
+	if targetAbs != baseAbs && !strings.HasPrefix(targetAbs, baseAbs+string(os.PathSeparator)) {
+		http.NotFound(w, r)
+		return true
+	}
+	if info, err := os.Stat(targetAbs); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, targetAbs)
+		return true
+	}
+
+	// SPA history fallback
+	http.ServeFile(w, r, indexPath)
+	return true
 }
 
 func (s *server) handleAdminCost(w http.ResponseWriter, r *http.Request) {

@@ -85,6 +85,10 @@ func TestMatchesFilter(t *testing.T) {
 		{"session mismatch", Event{SessionID: "s1"}, ListFilter{SessionID: "s2"}, false},
 		{"multi filter match", Event{SessionID: "s1", RunID: "r1"}, ListFilter{SessionID: "s1", RunID: "r1"}, true},
 		{"multi filter partial mismatch", Event{SessionID: "s1", RunID: "r1"}, ListFilter{SessionID: "s1", RunID: "r2"}, false},
+		{"team match", Event{TeamID: "team_1"}, ListFilter{TeamID: "team_1"}, true},
+		{"team mismatch", Event{TeamID: "team_1"}, ListFilter{TeamID: "team_2"}, false},
+		{"subagent match", Event{SubagentID: "sub_1"}, ListFilter{SubagentID: "sub_1"}, true},
+		{"subagent mismatch", Event{SubagentID: "sub_1"}, ListFilter{SubagentID: "sub_2"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

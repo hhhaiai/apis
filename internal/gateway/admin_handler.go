@@ -161,6 +161,28 @@ func (s *server) handleAdminProbe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *server) handleAdminAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	token := strings.TrimSpace(s.adminToken)
+	authRequired := token != ""
+	defaultTokenEnabled := token == DefaultAdminToken
+
+	resp := map[string]any{
+		"auth_required":         authRequired,
+		"default_token_enabled": defaultTokenEnabled,
+	}
+	if defaultTokenEnabled {
+		resp["default_token_warning"] = "default admin password is enabled; set ADMIN_TOKEN to a custom value"
+	}
+
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 func (s *server) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if s.adminToken == "" {
 		return true

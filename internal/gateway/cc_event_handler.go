@@ -23,12 +23,14 @@ func (s *server) handleCCEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter := ccevent.ListFilter{
-		Limit:     limit,
-		EventType: r.URL.Query().Get("event_type"),
-		SessionID: r.URL.Query().Get("session_id"),
-		RunID:     r.URL.Query().Get("run_id"),
-		PlanID:    r.URL.Query().Get("plan_id"),
-		TodoID:    r.URL.Query().Get("todo_id"),
+		Limit:      limit,
+		EventType:  r.URL.Query().Get("event_type"),
+		SessionID:  r.URL.Query().Get("session_id"),
+		RunID:      r.URL.Query().Get("run_id"),
+		PlanID:     r.URL.Query().Get("plan_id"),
+		TodoID:     r.URL.Query().Get("todo_id"),
+		TeamID:     r.URL.Query().Get("team_id"),
+		SubagentID: r.URL.Query().Get("subagent_id"),
 	}
 	items := s.eventStore.List(filter)
 	w.Header().Set("content-type", "application/json")

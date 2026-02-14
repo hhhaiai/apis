@@ -4,6 +4,8 @@ import (
 	. "ccgateway/internal/agentteam"
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -116,5 +118,87 @@ func TestTeam_OrchestrateWithFailure(t *testing.T) {
 	// Should error because "Dependent" can never run (its dependency failed)
 	if err == nil {
 		t.Fatal("expected error due to unresolvable dependency")
+	}
+}
+
+func TestTeam_TaskEventHook(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		events []TaskEvent
+	)
+	team := NewTeam("t2", "team-with-hook", func(_ context.Context, _ Agent, _ Task) (string, error) {
+		return "hook-ok", nil
+	})
+	team.SetTaskEventHook(func(event TaskEvent) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	})
+	_ = team.AddAgent(Agent{ID: "a1", Name: "Alice", Role: "lead"})
+	_, _ = team.AddTask("Hook Task", "", "a1", nil)
+
+	if err := team.Orchestrate(context.Background()); err != nil {
+		t.Fatalf("orchestrate: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) < 2 {
+		t.Fatalf("expected at least 2 task events, got %d", len(events))
+	}
+	var hasRunning, hasCompleted bool
+	for _, ev := range events {
+		if strings.TrimSpace(ev.RecordText) == "" {
+			t.Fatalf("expected non-empty record_text in %+v", ev)
+		}
+		switch ev.EventType {
+		case "team.task.running":
+			hasRunning = true
+		case "team.task.completed":
+			hasCompleted = true
+			if !strings.Contains(ev.RecordText, `output="`) {
+				t.Fatalf("expected completed record include output, got %q", ev.RecordText)
+			}
+		}
+	}
+	if !hasRunning || !hasCompleted {
+		t.Fatalf("expected running and completed events, got %+v", events)
+	}
+}
+
+func TestTeam_TaskEventHookFailed(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		events []TaskEvent
+	)
+	team := NewTeam("t3", "team-fail-hook", func(_ context.Context, _ Agent, _ Task) (string, error) {
+		return "", fmt.Errorf("task failed for test")
+	})
+	team.SetTaskEventHook(func(event TaskEvent) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	})
+	_ = team.AddAgent(Agent{ID: "a1", Name: "Alice", Role: "lead"})
+	_, _ = team.AddTask("Fail Hook Task", "", "a1", nil)
+
+	if err := team.Orchestrate(context.Background()); err != nil {
+		t.Fatalf("orchestrate unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	foundFailed := false
+	for _, ev := range events {
+		if ev.EventType != "team.task.failed" {
+			continue
+		}
+		foundFailed = true
+		if !strings.Contains(strings.ToLower(ev.RecordText), "output=") {
+			t.Fatalf("expected failed record include output text, got %q", ev.RecordText)
+		}
+	}
+	if !foundFailed {
+		t.Fatalf("expected team.task.failed event in %+v", events)
 	}
 }

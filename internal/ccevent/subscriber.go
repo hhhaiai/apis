@@ -80,5 +80,11 @@ func matchesFilter(e Event, f ListFilter) bool {
 	if f.TodoID != "" && e.TodoID != f.TodoID {
 		return false
 	}
+	if f.TeamID != "" && e.TeamID != f.TeamID {
+		return false
+	}
+	if f.SubagentID != "" && e.SubagentID != f.SubagentID {
+		return false
+	}
 	return true
 }

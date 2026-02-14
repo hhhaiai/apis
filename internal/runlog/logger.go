@@ -21,6 +21,7 @@ type Entry struct {
 	ToolCount      int    `json:"tool_count"`
 	Status         int    `json:"status"`
 	Error          string `json:"error,omitempty"`
+	RecordText     string `json:"record_text,omitempty"`
 	DurationMS     int64  `json:"duration_ms"`
 }
 

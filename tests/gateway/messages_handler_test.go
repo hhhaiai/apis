@@ -38,18 +38,21 @@ func newTestRouterWithDeps(t *testing.T, deps Dependencies) http.Handler {
 		deps.ModelMapper = modelmap.NewIdentityMapper()
 	}
 	return NewRouter(Dependencies{
-		Orchestrator: deps.Orchestrator,
-		Policy:       deps.Policy,
-		ModelMapper:  deps.ModelMapper,
-		Settings:     deps.Settings,
-		ToolCatalog:  deps.ToolCatalog,
-		SessionStore: deps.SessionStore,
-		RunStore:     deps.RunStore,
-		TodoStore:    deps.TodoStore,
-		PlanStore:    deps.PlanStore,
-		EventStore:   deps.EventStore,
-		MCPRegistry:  deps.MCPRegistry,
-		AdminToken:   deps.AdminToken,
+		Orchestrator:  deps.Orchestrator,
+		Policy:        deps.Policy,
+		ModelMapper:   deps.ModelMapper,
+		Settings:      deps.Settings,
+		ToolCatalog:   deps.ToolCatalog,
+		SessionStore:  deps.SessionStore,
+		RunStore:      deps.RunStore,
+		TodoStore:     deps.TodoStore,
+		PlanStore:     deps.PlanStore,
+		EventStore:    deps.EventStore,
+		TeamStore:     deps.TeamStore,
+		SubagentStore: deps.SubagentStore,
+		MCPRegistry:   deps.MCPRegistry,
+		PluginStore:   deps.PluginStore,
+		AdminToken:    deps.AdminToken,
 	})
 }
 

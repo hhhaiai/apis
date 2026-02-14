@@ -3,6 +3,7 @@ package agentteam
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,6 +56,20 @@ type Message struct {
 // TaskFunc is called to actually execute a task.
 type TaskFunc func(ctx context.Context, agent Agent, task Task) (string, error)
 
+// TaskEvent is emitted when task execution state changes.
+type TaskEvent struct {
+	EventType  string    `json:"event_type"`
+	TeamID     string    `json:"team_id"`
+	TeamName   string    `json:"team_name"`
+	Task       Task      `json:"task"`
+	Agent      Agent     `json:"agent"`
+	RecordText string    `json:"record_text"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// TaskEventHook handles task lifecycle events.
+type TaskEventHook func(event TaskEvent)
+
 // Team manages a group of agents working together.
 type Team struct {
 	mu        sync.RWMutex
@@ -67,6 +82,7 @@ type Team struct {
 	mailbox   map[string][]Message // agentID -> messages
 	counter   uint64
 	taskFn    TaskFunc
+	taskHook  TaskEventHook
 }
 
 // NewTeam creates a new team.
@@ -84,6 +100,13 @@ func NewTeam(id, name string, taskFn TaskFunc) *Team {
 		mailbox: make(map[string][]Message),
 		taskFn:  taskFn,
 	}
+}
+
+// SetTaskEventHook sets task lifecycle callback.
+func (t *Team) SetTaskEventHook(hook TaskEventHook) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.taskHook = hook
 }
 
 // AddAgent adds an agent to the team.
@@ -233,6 +256,7 @@ func (t *Team) Orchestrate(ctx context.Context) error {
 		task.Status = TaskRunning
 		task.StartedAt = &now
 		agent, hasAgent := t.agents[task.AssignedTo]
+		runningSnapshot := *task
 		t.mu.Unlock()
 
 		if !hasAgent {
@@ -242,20 +266,33 @@ func (t *Team) Orchestrate(ctx context.Context) error {
 				agent = agents[0]
 			}
 		}
+		t.emitTaskEvent("team.task.running", runningSnapshot, agent)
 
-		result, err := t.taskFn(ctx, agent, *task)
+		execTask := *task
+		execTask.Meta = copyMeta(execTask.Meta)
+		if execTask.Meta == nil {
+			execTask.Meta = map[string]any{}
+		}
+		execTask.Meta["team_id"] = t.id
+		execTask.Meta["team_name"] = t.name
+
+		result, err := t.taskFn(ctx, agent, execTask)
 
 		t.mu.Lock()
 		end := time.Now().UTC()
 		task.CompletedAt = &end
+		eventType := "team.task.completed"
 		if err != nil {
 			task.Status = TaskFailed
 			task.Result = fmt.Sprintf("error: %v", err)
+			eventType = "team.task.failed"
 		} else {
 			task.Status = TaskCompleted
 			task.Result = result
 		}
+		doneSnapshot := *task
 		t.mu.Unlock()
+		t.emitTaskEvent(eventType, doneSnapshot, agent)
 	}
 }
 
@@ -293,4 +330,83 @@ func (t *Team) allDone() bool {
 		}
 	}
 	return true
+}
+
+func copyMeta(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		out[key] = v
+	}
+	return out
+}
+
+func (t *Team) emitTaskEvent(eventType string, task Task, agent Agent) {
+	t.mu.RLock()
+	hook := t.taskHook
+	teamID := t.id
+	teamName := t.name
+	t.mu.RUnlock()
+	if hook == nil {
+		return
+	}
+	hook(TaskEvent{
+		EventType:  strings.TrimSpace(eventType),
+		TeamID:     strings.TrimSpace(teamID),
+		TeamName:   strings.TrimSpace(teamName),
+		Task:       task,
+		Agent:      agent,
+		RecordText: taskEventRecordText(eventType, teamID, task, agent),
+		CreatedAt:  time.Now().UTC(),
+	})
+}
+
+func taskEventRecordText(eventType, teamID string, task Task, agent Agent) string {
+	parts := []string{
+		strings.TrimSpace(eventType),
+		"team_id=" + strings.TrimSpace(teamID),
+		"task_id=" + strings.TrimSpace(task.ID),
+	}
+	if title := truncateText(normalizeSpaces(task.Title), 100); title != "" {
+		parts = append(parts, fmt.Sprintf(`title="%s"`, title))
+	}
+	if status := strings.TrimSpace(string(task.Status)); status != "" {
+		parts = append(parts, "status="+status)
+	}
+	if assignedTo := strings.TrimSpace(task.AssignedTo); assignedTo != "" {
+		parts = append(parts, "assigned_to="+assignedTo)
+	}
+	if agentID := strings.TrimSpace(agent.ID); agentID != "" {
+		parts = append(parts, "agent_id="+agentID)
+	}
+	if result := truncateText(normalizeSpaces(task.Result), 220); result != "" {
+		parts = append(parts, fmt.Sprintf(`output="%s"`, result))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func normalizeSpaces(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func truncateText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || limit <= 0 {
+		return ""
+	}
+	rs := []rune(text)
+	if len(rs) <= limit {
+		return text
+	}
+	return strings.TrimSpace(string(rs[:limit])) + "..."
 }

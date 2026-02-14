@@ -26,7 +26,9 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	streamMode := false
 	toolCount := 0
 	sessionID := ""
+	generatedText := ""
 	defer func() {
+		recordText := buildRunRecordText("/v1/messages", mode, statusCode, streamMode, generatedText, errText)
 		s.logRun(runlog.Entry{
 			RunID:          runID,
 			Path:           "/v1/messages",
@@ -38,6 +40,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			ToolCount:      toolCount,
 			Status:         statusCode,
 			Error:          errText,
+			RecordText:     recordText,
 			DurationMS:     time.Since(started).Milliseconds(),
 		})
 		if runID != "" {
@@ -53,11 +56,13 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				SessionID: sessionID,
 				RunID:     runID,
 				Data: map[string]any{
-					"path":   "/v1/messages",
-					"mode":   mode,
-					"status": statusCode,
-					"error":  errText,
-					"stream": streamMode,
+					"path":        "/v1/messages",
+					"mode":        mode,
+					"status":      statusCode,
+					"error":       errText,
+					"stream":      streamMode,
+					"output_text": compactOutputForEvent(generatedText),
+					"record_text": recordText,
 				},
 			})
 		}
@@ -169,7 +174,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if _, ok := creq.Metadata["strict_stream_passthrough_soft"]; !ok {
 			creq.Metadata["strict_stream_passthrough_soft"] = true
 		}
-		s.streamMessages(w, r, creq, requestedModel)
+		generatedText = s.streamMessages(w, r, creq, requestedModel)
 		return
 	}
 
@@ -180,6 +185,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
+	generatedText = collectResponseText(resp)
 
 	msg := fromCanonicalResponse(s.nextID("msg"), resp)
 	msg.Model = clientModel
@@ -188,11 +194,12 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(msg)
 }
 
-func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) {
+func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) string {
+	var generated strings.Builder
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
-		return
+		return generated.String()
 	}
 
 	w.Header().Set("content-type", "text/event-stream")
@@ -206,8 +213,9 @@ func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orch
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return
+				return generated.String()
 			}
+			appendStreamText(&generated, ev)
 			if ev.PassThrough && len(ev.RawData) > 0 {
 				raw := ev.RawData
 				if rewritten, ok := rewriteAnthropicStreamModel(ev.Type, ev.RawData, outwardModel); ok {
@@ -218,14 +226,14 @@ func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orch
 					eventName = ev.RawEvent
 				}
 				if err := writeSSERaw(w, eventName, raw); err != nil {
-					return
+					return generated.String()
 				}
 				flusher.Flush()
 				continue
 			}
 			payload := streamPayloadFromEvent(ev, outwardModel, s.nextID("msg"))
 			if err := writeSSE(w, ev.Type, payload); err != nil {
-				return
+				return generated.String()
 			}
 			flusher.Flush()
 		case err, ok := <-errs:
@@ -240,9 +248,9 @@ func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orch
 				},
 			})
 			flusher.Flush()
-			return
+			return generated.String()
 		case <-r.Context().Done():
-			return
+			return generated.String()
 		}
 	}
 }

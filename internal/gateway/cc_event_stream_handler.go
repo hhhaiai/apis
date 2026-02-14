@@ -27,11 +27,13 @@ func (s *server) handleCCEventsStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filter := ccevent.ListFilter{
-		EventType: r.URL.Query().Get("event_type"),
-		SessionID: r.URL.Query().Get("session_id"),
-		RunID:     r.URL.Query().Get("run_id"),
-		PlanID:    r.URL.Query().Get("plan_id"),
-		TodoID:    r.URL.Query().Get("todo_id"),
+		EventType:  r.URL.Query().Get("event_type"),
+		SessionID:  r.URL.Query().Get("session_id"),
+		RunID:      r.URL.Query().Get("run_id"),
+		PlanID:     r.URL.Query().Get("plan_id"),
+		TodoID:     r.URL.Query().Get("todo_id"),
+		TeamID:     r.URL.Query().Get("team_id"),
+		SubagentID: r.URL.Query().Get("subagent_id"),
 	}
 
 	ch, cancel := s.eventStore.Subscribe(filter)

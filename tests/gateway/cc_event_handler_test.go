@@ -50,6 +50,116 @@ func TestCCEventsList(t *testing.T) {
 	}
 }
 
+func TestCCEventsListBySubagentID(t *testing.T) {
+	eventStore := ccevent.NewStore()
+	_, _ = eventStore.Append(ccevent.AppendInput{EventType: "subagent.terminated", SubagentID: "sub_a"})
+	_, _ = eventStore.Append(ccevent.AppendInput{EventType: "subagent.deleted", SubagentID: "sub_b"})
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		EventStore:   eventStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/cc/events?subagent_id=sub_a", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data  []ccevent.Event `json:"data"`
+		Count int             `json:"count"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal events response: %v", err)
+	}
+	if resp.Count != 1 || len(resp.Data) != 1 {
+		t.Fatalf("unexpected events payload: %+v", resp)
+	}
+	if resp.Data[0].SubagentID != "sub_a" {
+		t.Fatalf("unexpected subagent id: %q", resp.Data[0].SubagentID)
+	}
+}
+
+func TestCCEventsListByTeamID(t *testing.T) {
+	eventStore := ccevent.NewStore()
+	_, _ = eventStore.Append(ccevent.AppendInput{EventType: "team.task.completed", TeamID: "team_a"})
+	_, _ = eventStore.Append(ccevent.AppendInput{EventType: "team.task.failed", TeamID: "team_b"})
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		EventStore:   eventStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/cc/events?team_id=team_a", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data  []ccevent.Event `json:"data"`
+		Count int             `json:"count"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal events response: %v", err)
+	}
+	if resp.Count != 1 || len(resp.Data) != 1 {
+		t.Fatalf("unexpected events payload: %+v", resp)
+	}
+	if resp.Data[0].TeamID != "team_a" {
+		t.Fatalf("unexpected team id: %q", resp.Data[0].TeamID)
+	}
+}
+
+func TestCCEventsIncludeRecordText(t *testing.T) {
+	eventStore := ccevent.NewStore()
+	sessionStore := session.NewStore()
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		SessionStore: sessionStore,
+		EventStore:   eventStore,
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/cc/sessions", strings.NewReader(`{"title":"record text"}`))
+	createRR := httptest.NewRecorder()
+	router.ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusCreated {
+		t.Fatalf("expected 201 create session, got %d; body=%s", createRR.Code, createRR.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/cc/events?event_type=session.created", nil)
+	listRR := httptest.NewRecorder()
+	router.ServeHTTP(listRR, listReq)
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 events list, got %d; body=%s", listRR.Code, listRR.Body.String())
+	}
+	var listResp struct {
+		Data []ccevent.Event `json:"data"`
+	}
+	if err := json.Unmarshal(listRR.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("unmarshal event list: %v", err)
+	}
+	if len(listResp.Data) == 0 {
+		t.Fatalf("expected non-empty session.created events")
+	}
+	recordText, _ := listResp.Data[0].Data["record_text"].(string)
+	recordText = strings.TrimSpace(recordText)
+	if recordText == "" {
+		t.Fatalf("expected non-empty record_text in event data: %+v", listResp.Data[0].Data)
+	}
+	if !strings.Contains(recordText, "session.created") {
+		t.Fatalf("expected record_text include event_type, got %q", recordText)
+	}
+}
+
 func TestCCEventFlowForSessionTodoRun(t *testing.T) {
 	eventStore := ccevent.NewStore()
 	sessionStore := session.NewStore()
@@ -128,6 +238,8 @@ func TestCCEventFlowForSessionTodoRun(t *testing.T) {
 		todoCompleted  bool
 		runCreated     bool
 		runCompleted   bool
+		runRecordText  bool
+		runOutputText  bool
 	}
 	var flags seen
 	for _, ev := range listResp.Data {
@@ -145,11 +257,20 @@ func TestCCEventFlowForSessionTodoRun(t *testing.T) {
 		case "run.completed":
 			if ev.RunID == runID {
 				flags.runCompleted = true
+				if text, ok := ev.Data["record_text"].(string); ok && strings.TrimSpace(text) != "" {
+					flags.runRecordText = true
+				}
+				if text, ok := ev.Data["output_text"].(string); ok && strings.TrimSpace(text) != "" {
+					flags.runOutputText = true
+				}
 			}
 		}
 	}
 	if !flags.sessionCreated || !flags.todoCreated || !flags.todoCompleted || !flags.runCreated || !flags.runCompleted {
 		t.Fatalf("missing expected event flags: %+v", flags)
+	}
+	if !flags.runRecordText || !flags.runOutputText {
+		t.Fatalf("expected run.completed include record_text and output_text, got %+v", flags)
 	}
 }
 

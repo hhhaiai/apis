@@ -19,9 +19,11 @@ func TestStoreAppendListFilter(t *testing.T) {
 		t.Fatalf("append first: %v", err)
 	}
 	second, err := st.Append(AppendInput{
-		EventType: "todo.updated",
-		SessionID: "sess_1",
-		TodoID:    "todo_1",
+		EventType:  "todo.updated",
+		SessionID:  "sess_1",
+		TodoID:     "todo_1",
+		TeamID:     "team_1",
+		SubagentID: "sub_1",
 	})
 	if err != nil {
 		t.Fatalf("append second: %v", err)
@@ -52,6 +54,14 @@ func TestStoreAppendListFilter(t *testing.T) {
 	byType := st.List(ListFilter{EventType: "todo.updated"})
 	if len(byType) != 1 || byType[0].EventType != "todo.updated" {
 		t.Fatalf("unexpected event_type filter: %+v", byType)
+	}
+	bySubagent := st.List(ListFilter{SubagentID: "sub_1"})
+	if len(bySubagent) != 1 || bySubagent[0].SubagentID != "sub_1" {
+		t.Fatalf("unexpected subagent filter: %+v", bySubagent)
+	}
+	byTeam := st.List(ListFilter{TeamID: "team_1"})
+	if len(byTeam) != 1 || byTeam[0].TeamID != "team_1" {
+		t.Fatalf("unexpected team filter: %+v", byTeam)
 	}
 }
 

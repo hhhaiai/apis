@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -178,5 +180,131 @@ func TestAdminSchedulerAndProbeStatus(t *testing.T) {
 	router.ServeHTTP(rrPutProbe, reqPutProbe)
 	if rrPutProbe.Code != http.StatusOK {
 		t.Fatalf("expected 200 for put admin probe, got %d; body=%s", rrPutProbe.Code, rrPutProbe.Body.String())
+	}
+}
+
+func TestAdminDashboardFallbackLegacyHTML(t *testing.T) {
+	router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "CC Gateway") {
+		t.Fatalf("expected dashboard html body, got %q", body)
+	}
+}
+
+func TestAdminDashboardServeBuiltDist(t *testing.T) {
+	distDir := t.TempDir()
+	indexHTML := "<!doctype html><html><body>vue-admin-dist</body></html>"
+	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte(indexHTML), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	assetsDir := filepath.Join(distDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("mkdir assets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte("console.log('dist');"), 0o644); err != nil {
+		t.Fatalf("write asset: %v", err)
+	}
+
+	t.Setenv("ADMIN_UI_DIST_DIR", distDir)
+	router := newTestRouter(t)
+
+	reqIndex := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	rrIndex := httptest.NewRecorder()
+	router.ServeHTTP(rrIndex, reqIndex)
+	if rrIndex.Code != http.StatusOK {
+		t.Fatalf("expected 200 for dist index, got %d", rrIndex.Code)
+	}
+	if !strings.Contains(rrIndex.Body.String(), "vue-admin-dist") {
+		t.Fatalf("expected dist index body, got %q", rrIndex.Body.String())
+	}
+
+	reqAsset := httptest.NewRequest(http.MethodGet, "/admin/assets/app.js", nil)
+	rrAsset := httptest.NewRecorder()
+	router.ServeHTTP(rrAsset, reqAsset)
+	if rrAsset.Code != http.StatusOK {
+		t.Fatalf("expected 200 for dist asset, got %d", rrAsset.Code)
+	}
+	if !strings.Contains(rrAsset.Body.String(), "console.log('dist');") {
+		t.Fatalf("expected dist asset body, got %q", rrAsset.Body.String())
+	}
+
+	reqSPA := httptest.NewRequest(http.MethodGet, "/admin/workbench/plans", nil)
+	rrSPA := httptest.NewRecorder()
+	router.ServeHTTP(rrSPA, reqSPA)
+	if rrSPA.Code != http.StatusOK {
+		t.Fatalf("expected 200 for spa fallback, got %d", rrSPA.Code)
+	}
+	if !strings.Contains(rrSPA.Body.String(), "vue-admin-dist") {
+		t.Fatalf("expected spa fallback index body, got %q", rrSPA.Body.String())
+	}
+}
+
+func TestRootHomePage(t *testing.T) {
+	router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "CC Gateway") {
+		t.Fatalf("expected home page title, got %q", body)
+	}
+	if !strings.Contains(body, "/admin/") {
+		t.Fatalf("expected admin entry link, got %q", body)
+	}
+	if !strings.Contains(body, DefaultAdminToken) {
+		t.Fatalf("expected default admin token hint, got %q", body)
+	}
+}
+
+func TestAdminAuthStatus(t *testing.T) {
+	router := newTestRouterWithDeps(t, Dependencies{
+		AdminToken: "secret-admin",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/admin/auth/status", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode auth status: %v", err)
+	}
+	if got, _ := payload["auth_required"].(bool); !got {
+		t.Fatalf("expected auth_required=true, got %#v", payload["auth_required"])
+	}
+	if got, _ := payload["default_token_enabled"].(bool); got {
+		t.Fatalf("expected default_token_enabled=false, got %#v", payload["default_token_enabled"])
+	}
+}
+
+func TestAdminAuthStatusWithDefaultTokenWarning(t *testing.T) {
+	router := newTestRouterWithDeps(t, Dependencies{
+		AdminToken: DefaultAdminToken,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/admin/auth/status", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode auth status: %v", err)
+	}
+	if got, _ := payload["default_token_enabled"].(bool); !got {
+		t.Fatalf("expected default_token_enabled=true, got %#v", payload["default_token_enabled"])
+	}
+	if got, _ := payload["default_token_warning"].(string); strings.TrimSpace(got) == "" {
+		t.Fatalf("expected warning text, got %#v", payload["default_token_warning"])
 	}
 }

@@ -1,6 +1,6 @@
 # CC Gateway 项目完整文档（当前实现）
 
-> 更新时间：2026-02-13  
+> 更新时间：2026-02-14  
 > 代码基线：`/Users/sanbo/Desktop/api`
 
 ## 文档说明
@@ -21,6 +21,7 @@ CC Gateway 是一个统一 LLM 网关，目标是同时兼容：
 ## 2. 当前默认启动行为（`cmd/cc-gateway/main.go`）
 
 - 默认端口：`8080`（环境变量 `PORT` 可覆盖）
+- 默认后台密码：`admin123456`（未设置 `ADMIN_TOKEN` 时启用，并在日志/后台告警）
 - 若未配置 `UPSTREAM_ADAPTERS_JSON`：
   - 自动启用两个 mock 适配器：`mock-primary` / `mock-fallback`
 - 自动初始化并接入：
@@ -90,19 +91,38 @@ CC Gateway 是一个统一 LLM 网关，目标是同时兼容：
 - `POST /v1/cc/plans/{id}/execute`
 - `GET /v1/cc/events`
 - `GET /v1/cc/events/stream`（SSE）
+- `GET/POST /v1/cc/teams`
+- `GET /v1/cc/teams/{id}`
+- `GET/POST /v1/cc/teams/{id}/agents`
+- `GET/POST /v1/cc/teams/{id}/tasks`
+- `POST /v1/cc/teams/{id}/orchestrate`
+- `GET/POST /v1/cc/teams/{id}/messages`
+- `GET /v1/cc/subagents`
+- `GET /v1/cc/subagents/{id}`
+- `POST /v1/cc/subagents/{id}/terminate`
+- `DELETE /v1/cc/subagents/{id}`
+- `GET /v1/cc/subagents/{id}/timeline`
+- `GET /v1/cc/subagents/{id}/events`
+- `GET /v1/cc/subagents/{id}/stream`（SSE）
 - `GET/POST /v1/cc/mcp/servers`
 - `GET/PUT/DELETE /v1/cc/mcp/servers/{id}`
 - `POST /v1/cc/mcp/servers/{id}/health`
 - `POST /v1/cc/mcp/servers/{id}/reconnect`
 - `POST /v1/cc/mcp/servers/{id}/tools/list`
 - `POST /v1/cc/mcp/servers/{id}/tools/call`
+- `GET/POST /v1/cc/plugins`
+- `GET/DELETE /v1/cc/plugins/{name}`
+- `POST /v1/cc/plugins/{name}/enable`
+- `POST /v1/cc/plugins/{name}/disable`
 
 ### 4.5 管理接口
 
+- `GET /`（入口文档 + 后台入口）
 - `GET/PUT /admin/settings`
 - `GET/PUT /admin/tools`
 - `GET/PUT /admin/scheduler`
 - `GET/PUT /admin/probe`
+- `GET /admin/auth/status`
 - `GET /admin/status`
 - `GET /admin/`（内置 Dashboard）
 
@@ -115,6 +135,14 @@ CC Gateway 是一个统一 LLM 网关，目标是同时兼容：
 - `POST /v1/cc/eval`
 
 ## 5. 协议与行为细节
+
+- `GET /v1/cc/events` 与 `GET /v1/cc/events/stream` 支持 `team_id`、`subagent_id` 过滤。
+- `GET /v1/cc/subagents/{id}/timeline` 与 `GET /v1/cc/subagents/{id}/events` 支持 `limit`、`event_type` 查询参数。
+- `GET /v1/cc/subagents/{id}/stream` 支持 `event_type` 查询参数。
+- 事件 `data` 会自动补充 `record_text`（文本记录），用于日志审计与多任务同步。
+- 子代理生命周期会追加事件：`subagent.created`、`subagent.running`、`subagent.completed`、`subagent.failed`。
+- Team 任务执行会追加事件：`team.task.running`、`team.task.completed`、`team.task.failed`。
+- 插件管理会追加事件：`plugin.installed`、`plugin.enabled`、`plugin.disabled`、`plugin.uninstalled`。
 
 ### 5.1 模式（mode）
 
@@ -283,7 +311,7 @@ mode 影响：
 ### 10.1 核心
 
 - `PORT`（默认 `8080`）
-- `ADMIN_TOKEN`（为空时 admin 接口不鉴权）
+- `ADMIN_TOKEN`（未设置时默认启用 `admin123456`，可登录但会告警）
 - `RUN_LOG_PATH`（默认 `logs/run-events.log`）
 - `STATE_PERSIST_DIR`（为空表示不启用持久化）
 - `MOCK_PRIMARY_FAIL`（仅 mock 模式下生效）
@@ -364,9 +392,28 @@ mode 影响：
 | Skills | 是 | 否 | 默认 501 |
 | Eval | 是 | 否 | 默认 501 |
 | Cost Tracking | 是 | 否 | 默认 501 |
-| Rules/Hooks/Plugin/Tenant/Sandbox/Subagent/AgentTeam | 是 | 否 | 无默认入口 |
+| Plugin/Subagent/AgentTeam | 是 | 是 | 是 |
+| Rules/Hooks/Tenant/Sandbox | 是 | 否 | 无默认入口 |
 
 ## 12. 快速启动
+
+推荐直接使用一键脚本：
+
+```bash
+bash scripts/build_run_gateway.sh
+```
+
+启动后访问：
+
+- `http://127.0.0.1:8080/`（文档入口 + 后台入口）
+- `http://127.0.0.1:8080/admin/`（后台控制台）
+
+后台支持中英文切换（登录页、导航、各面板主要文案/提示）。
+
+默认后台密码：
+
+- `admin123456`（仅用于开发验证）
+- 生产环境请设置 `ADMIN_TOKEN` 覆盖默认值
 
 ```bash
 go build ./cmd/cc-gateway
@@ -374,6 +421,26 @@ go run ./cmd/cc-gateway
 ```
 
 默认监听 `http://127.0.0.1:8080`。
+
+管理后台（Vue 版）：
+
+```bash
+cd web/admin
+npm install
+npm run build
+cd ../..
+go run ./cmd/cc-gateway
+```
+
+访问 `http://127.0.0.1:8080/admin/`。  
+默认读取 `web/admin/dist`；可通过 `ADMIN_UI_DIST_DIR` 指向其它构建目录。若目录不存在，会自动回退到内置 `internal/gateway/static/dashboard.html`。
+
+常用参数：
+
+- `--no-ui`：跳过 Vue 后台构建（继续使用已有 dist 或旧版内置后台）
+- `--skip-npm-install`：跳过 npm install
+- `--test`：编译前执行 `go test ./...`
+- `--build-only`：只编译不启动
 
 基础冒烟：
 

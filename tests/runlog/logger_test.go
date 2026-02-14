@@ -23,6 +23,7 @@ func TestFileLoggerWritesJSONL(t *testing.T) {
 		Stream:     false,
 		ToolCount:  0,
 		Status:     200,
+		RecordText: "generated output summary",
 		DurationMS: 12,
 	})
 	if err != nil {
@@ -35,5 +36,8 @@ func TestFileLoggerWritesJSONL(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"run_id":"run_test"`) {
 		t.Fatalf("expected run id in log file, got: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), `"record_text":"generated output summary"`) {
+		t.Fatalf("expected record_text in log file, got: %s", string(raw))
 	}
 }

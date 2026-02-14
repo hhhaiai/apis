@@ -9,33 +9,39 @@ import (
 )
 
 type Event struct {
-	ID        string         `json:"id"`
-	Type      string         `json:"type"`
-	EventType string         `json:"event_type"`
-	SessionID string         `json:"session_id,omitempty"`
-	RunID     string         `json:"run_id,omitempty"`
-	PlanID    string         `json:"plan_id,omitempty"`
-	TodoID    string         `json:"todo_id,omitempty"`
-	Data      map[string]any `json:"data,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID         string         `json:"id"`
+	Type       string         `json:"type"`
+	EventType  string         `json:"event_type"`
+	SessionID  string         `json:"session_id,omitempty"`
+	RunID      string         `json:"run_id,omitempty"`
+	PlanID     string         `json:"plan_id,omitempty"`
+	TodoID     string         `json:"todo_id,omitempty"`
+	TeamID     string         `json:"team_id,omitempty"`
+	SubagentID string         `json:"subagent_id,omitempty"`
+	Data       map[string]any `json:"data,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
 }
 
 type AppendInput struct {
-	EventType string         `json:"event_type"`
-	SessionID string         `json:"session_id,omitempty"`
-	RunID     string         `json:"run_id,omitempty"`
-	PlanID    string         `json:"plan_id,omitempty"`
-	TodoID    string         `json:"todo_id,omitempty"`
-	Data      map[string]any `json:"data,omitempty"`
+	EventType  string         `json:"event_type"`
+	SessionID  string         `json:"session_id,omitempty"`
+	RunID      string         `json:"run_id,omitempty"`
+	PlanID     string         `json:"plan_id,omitempty"`
+	TodoID     string         `json:"todo_id,omitempty"`
+	TeamID     string         `json:"team_id,omitempty"`
+	SubagentID string         `json:"subagent_id,omitempty"`
+	Data       map[string]any `json:"data,omitempty"`
 }
 
 type ListFilter struct {
-	Limit     int
-	EventType string
-	SessionID string
-	RunID     string
-	PlanID    string
-	TodoID    string
+	Limit      int
+	EventType  string
+	SessionID  string
+	RunID      string
+	PlanID     string
+	TodoID     string
+	TeamID     string
+	SubagentID string
 }
 
 type Store struct {
@@ -67,15 +73,20 @@ func (s *Store) Append(in AppendInput) (Event, error) {
 	defer s.mu.Unlock()
 
 	e := Event{
-		ID:        s.nextIDLocked(),
-		Type:      "event",
-		EventType: eventType,
-		SessionID: strings.TrimSpace(in.SessionID),
-		RunID:     strings.TrimSpace(in.RunID),
-		PlanID:    strings.TrimSpace(in.PlanID),
-		TodoID:    strings.TrimSpace(in.TodoID),
-		Data:      copyMap(in.Data),
-		CreatedAt: time.Now().UTC(),
+		ID:         s.nextIDLocked(),
+		Type:       "event",
+		EventType:  eventType,
+		SessionID:  strings.TrimSpace(in.SessionID),
+		RunID:      strings.TrimSpace(in.RunID),
+		PlanID:     strings.TrimSpace(in.PlanID),
+		TodoID:     strings.TrimSpace(in.TodoID),
+		TeamID:     strings.TrimSpace(in.TeamID),
+		SubagentID: strings.TrimSpace(in.SubagentID),
+		Data:       copyMap(in.Data),
+		CreatedAt:  time.Now().UTC(),
+	}
+	if e.TeamID == "" {
+		e.TeamID = strings.TrimSpace(valueAsString(in.Data["team_id"]))
 	}
 	s.events = append(s.events, e)
 	// Notify SSE subscribers outside the lock
@@ -97,6 +108,8 @@ func (s *Store) List(filter ListFilter) []Event {
 	runID := strings.TrimSpace(filter.RunID)
 	planID := strings.TrimSpace(filter.PlanID)
 	todoID := strings.TrimSpace(filter.TodoID)
+	teamID := strings.TrimSpace(filter.TeamID)
+	subagentID := strings.TrimSpace(filter.SubagentID)
 
 	out := make([]Event, 0, limit)
 	for i := len(s.events) - 1; i >= 0 && len(out) < limit; i-- {
@@ -114,6 +127,12 @@ func (s *Store) List(filter ListFilter) []Event {
 			continue
 		}
 		if todoID != "" && e.TodoID != todoID {
+			continue
+		}
+		if teamID != "" && e.TeamID != teamID {
+			continue
+		}
+		if subagentID != "" && e.SubagentID != subagentID {
 			continue
 		}
 		out = append(out, cloneEvent(e))
@@ -145,4 +164,11 @@ func copyMap(in map[string]any) map[string]any {
 		out[key] = v
 	}
 	return out
+}
+
+func valueAsString(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
 }

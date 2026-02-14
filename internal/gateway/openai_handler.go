@@ -26,7 +26,9 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	streamMode := false
 	toolCount := 0
 	sessionID := ""
+	generatedText := ""
 	defer func() {
+		recordText := buildRunRecordText("/v1/chat/completions", mode, statusCode, streamMode, generatedText, errText)
 		s.logRun(runlog.Entry{
 			RunID:          runID,
 			Path:           "/v1/chat/completions",
@@ -38,6 +40,7 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			ToolCount:      toolCount,
 			Status:         statusCode,
 			Error:          errText,
+			RecordText:     recordText,
 			DurationMS:     time.Since(started).Milliseconds(),
 		})
 		if runID != "" {
@@ -53,11 +56,13 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				SessionID: sessionID,
 				RunID:     runID,
 				Data: map[string]any{
-					"path":   "/v1/chat/completions",
-					"mode":   mode,
-					"status": statusCode,
-					"error":  errText,
-					"stream": streamMode,
+					"path":        "/v1/chat/completions",
+					"mode":        mode,
+					"status":      statusCode,
+					"error":       errText,
+					"stream":      streamMode,
+					"output_text": compactOutputForEvent(generatedText),
+					"record_text": recordText,
 				},
 			})
 		}
@@ -159,7 +164,7 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	creq.Metadata["upstream_model"] = mappedModel
 
 	if msgReq.Stream {
-		s.streamOpenAIChatCompletions(w, r, creq, requestedModel)
+		generatedText = s.streamOpenAIChatCompletions(w, r, creq, requestedModel)
 		return
 	}
 
@@ -170,6 +175,7 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		s.writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
+	generatedText = collectResponseText(resp)
 
 	out := toOpenAIChatCompletionsResponse(s.nextID("chatcmpl"), clientModel, resp)
 	w.Header().Set("content-type", "application/json")
@@ -177,11 +183,12 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (s *server) streamOpenAIChatCompletions(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) {
+func (s *server) streamOpenAIChatCompletions(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) string {
+	var generated strings.Builder
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
-		return
+		return generated.String()
 	}
 
 	w.Header().Set("content-type", "text/event-stream")
@@ -199,15 +206,16 @@ func (s *server) streamOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			if !ok {
 				_ = writeOpenAISSEData(w, "[DONE]")
 				flusher.Flush()
-				return
+				return generated.String()
 			}
+			appendStreamText(&generated, ev)
 			chunk := openAIChatChunkFromEvent(streamID, outwardModel, created, ev)
 			if chunk == nil {
 				continue
 			}
 			raw, _ := json.Marshal(chunk)
 			if err := writeOpenAISSEData(w, string(raw)); err != nil {
-				return
+				return generated.String()
 			}
 			flusher.Flush()
 		case err, ok := <-errs:
@@ -216,9 +224,9 @@ func (s *server) streamOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			}
 			_ = writeOpenAISSEData(w, fmt.Sprintf(`{"error":{"message":%q}}`, err.Error()))
 			flusher.Flush()
-			return
+			return generated.String()
 		case <-r.Context().Done():
-			return
+			return generated.String()
 		}
 	}
 }
@@ -235,7 +243,9 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	streamMode := false
 	toolCount := 0
 	sessionID := ""
+	generatedText := ""
 	defer func() {
+		recordText := buildRunRecordText("/v1/responses", mode, statusCode, streamMode, generatedText, errText)
 		s.logRun(runlog.Entry{
 			RunID:          runID,
 			Path:           "/v1/responses",
@@ -247,6 +257,7 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 			ToolCount:      toolCount,
 			Status:         statusCode,
 			Error:          errText,
+			RecordText:     recordText,
 			DurationMS:     time.Since(started).Milliseconds(),
 		})
 		if runID != "" {
@@ -262,11 +273,13 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 				SessionID: sessionID,
 				RunID:     runID,
 				Data: map[string]any{
-					"path":   "/v1/responses",
-					"mode":   mode,
-					"status": statusCode,
-					"error":  errText,
-					"stream": streamMode,
+					"path":        "/v1/responses",
+					"mode":        mode,
+					"status":      statusCode,
+					"error":       errText,
+					"stream":      streamMode,
+					"output_text": compactOutputForEvent(generatedText),
+					"record_text": recordText,
 				},
 			})
 		}
@@ -368,7 +381,7 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	creq.Metadata["upstream_model"] = mappedModel
 
 	if msgReq.Stream {
-		s.streamOpenAIResponses(w, r, creq, requestedModel)
+		generatedText = s.streamOpenAIResponses(w, r, creq, requestedModel)
 		return
 	}
 
@@ -379,6 +392,7 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
+	generatedText = collectResponseText(resp)
 	out := toOpenAIResponsesResponse(s.nextID("resp"), clientModel, resp)
 
 	w.Header().Set("content-type", "application/json")
@@ -386,11 +400,12 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) {
+func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) string {
+	var generated strings.Builder
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
-		return
+		return generated.String()
 	}
 
 	w.Header().Set("content-type", "text/event-stream")
@@ -425,15 +440,16 @@ func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, r
 				_ = writeOpenAISSEData(w, string(raw))
 				_ = writeOpenAISSEData(w, "[DONE]")
 				flusher.Flush()
-				return
+				return generated.String()
 			}
+			appendStreamText(&generated, ev)
 			item := openAIResponseStreamEvent(respID, ev)
 			if item == nil {
 				continue
 			}
 			raw, _ := json.Marshal(item)
 			if err := writeOpenAISSEData(w, string(raw)); err != nil {
-				return
+				return generated.String()
 			}
 			flusher.Flush()
 		case err, ok := <-errs:
@@ -442,9 +458,9 @@ func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, r
 			}
 			_ = writeOpenAISSEData(w, fmt.Sprintf(`{"type":"error","error":{"message":%q}}`, err.Error()))
 			flusher.Flush()
-			return
+			return generated.String()
 		case <-r.Context().Done():
-			return
+			return generated.String()
 		}
 	}
 }
