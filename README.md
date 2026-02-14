@@ -1,72 +1,103 @@
 # CC Gateway
 
-统一 LLM API 网关，兼容 Claude Code / Anthropic Messages、OpenAI Chat Completions/Responses，并提供自有扩展能力（MCP / Plugins / Agent Teams / Subagents / Plans / Todos / Skills 等）。
+统一 LLM API 网关，兼容 Claude Code / Anthropic Messages、OpenAI Chat Completions/Responses，并支持运行时路由、模型映射、Script Adapter、MCP/Plugins/Plans/Todos 等能力。
 
 ## 文档入口
 
 - 项目完整文档：`docs/PROJECT_FULL_GUIDE.md`
 - 项目结构与运行梳理：`docs/PROJECT_OVERVIEW.md`
-- 后台功能清单与多语言说明：`docs/ADMIN_CONSOLE_FEATURES.md`
+- 后台功能清单：`docs/ADMIN_CONSOLE_FEATURES.md`
+- Script Adapter 基座：`docs/SCRIPT_ADAPTER_BASE.md`
+- Script Adapter 示例：`docs/SCRIPT_ADAPTER_EXAMPLES.md`
 
-## 一键运行（推荐）
+## 一键运行
 
 ```bash
 bash scripts/build_run_gateway.sh
 ```
 
-默认行为：
+默认端口 `8080`，启动后访问：
 
-1. 构建后台前端（Vue + Vite）
-2. 构建网关二进制（`bin/cc-gateway`）
-3. 启动服务（默认端口 `8080`）
+- `http://127.0.0.1:8080/`
+- `http://127.0.0.1:8080/admin/`
+- `http://127.0.0.1:8080/healthz`
 
-启动后访问：
+默认后台口令为 `ADMIN_TOKEN=admin123456`，生产环境请务必修改。
 
-- 入口页（文档介绍 + 后台入口）：`http://127.0.0.1:8080/`
-- 后台控制台：`http://127.0.0.1:8080/admin/`
-- 健康检查：`http://127.0.0.1:8080/healthz`
+## 最新完整用法
 
-默认后台密码：
-
-- 默认 `ADMIN_TOKEN=admin123456`
-- 未修改时可登录，但后台会持续显示安全告警
-- 生产环境务必设置自定义 `ADMIN_TOKEN`
-
-## 一键脚本参数
+### 1) 本地 GLM 双路由（GLM-5 + GLM-4.7）
 
 ```bash
-bash scripts/build_run_gateway.sh --help
+source <(bash scripts/use-glm-local-env.sh)
+bash scripts/build_run_gateway.sh --no-ui --port 18080
 ```
 
-常用示例：
+### 2) Anthropic 协议调用（CC 直连网关）
 
 ```bash
-# 仅构建，不启动
-bash scripts/build_run_gateway.sh --build-only
-
-# 启动前先跑后端测试
-bash scripts/build_run_gateway.sh --test
-
-# 使用自定义端口
-bash scripts/build_run_gateway.sh --port 18080
-
-# 跳过前端构建（仅后端）
-bash scripts/build_run_gateway.sh --no-ui
-
-# 跳过 npm install（依赖已安装时）
-bash scripts/build_run_gateway.sh --skip-npm-install
+curl -N 'http://127.0.0.1:18080/v1/messages' \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  --data-raw '{
+    "model":"GLM-5",
+    "max_tokens":128,
+    "stream":true,
+    "messages":[{"role":"user","content":"hi"}]
+  }'
 ```
 
-## 测试代码位置
+### 3) 后台运行时模型映射（无需重启）
 
-所有测试代码统一位于 `tests/` 目录（按模块分子目录），例如：
+```bash
+curl 'http://127.0.0.1:18080/admin/model-mapping' \
+  -H 'authorization: Bearer secret-admin' \
+  -H 'content-type: application/json' \
+  -X PUT \
+  --data-raw '{
+    "model_mappings":{"claude-3-7-sonnet":"GLM-5","gpt-4o":"GLM-4.7"},
+    "model_map_strict":true,
+    "model_map_fallback":"GLM-5"
+  }'
+```
 
-- `tests/gateway/`
-- `tests/upstream/`
-- `tests/agentteam/`
-- `tests/subagent/`
+### 4) 后台运行时上游接入（Script/HTTP）
 
-执行：
+```bash
+curl 'http://127.0.0.1:18080/admin/upstream' \
+  -H 'authorization: Bearer secret-admin' \
+  -H 'content-type: application/json' \
+  -X PUT \
+  --data-raw '{
+    "adapters":[
+      {"name":"glm-5","kind":"openai","base_url":"http://127.0.0.1:5025","api_key":"free","model":"GLM-5","force_stream":true},
+      {"name":"glm-47","kind":"openai","base_url":"http://127.0.0.1:5022","api_key":"free","model":"GLM-4.7","force_stream":true}
+    ],
+    "default_route":["glm-5","glm-47"],
+    "model_routes":{"GLM-5":["glm-5"],"GLM-4.7":["glm-47"],"*":["glm-5","glm-47"]}
+  }'
+```
+
+### 5) 任意 API 接入（Script Adapter）
+
+- `kind=script` 支持 `curl/python/go` 自定义桥接。
+- 入口：`docs/SCRIPT_ADAPTER_BASE.md` 与 `docs/SCRIPT_ADAPTER_EXAMPLES.md`。
+- 示例脚本：`scripts/script-adapters/`。
+
+## 后台接口清单（核心）
+
+- `GET/PUT /admin/settings`
+- `GET/PUT /admin/model-mapping`
+- `GET/PUT /admin/upstream`
+- `GET/PUT /admin/tools`
+- `GET/PUT /admin/scheduler`
+- `GET/PUT /admin/probe`
+- `GET /admin/status`
+
+## 测试规范
+
+- 所有测试文件统一在 `tests/` 目录。
+- 运行：
 
 ```bash
 go test ./...
@@ -74,7 +105,7 @@ go test ./...
 
 ## 常用配置样例
 
-- 运行时设置：`configs/runtime-settings.example.json`
-- 本地 GLM 上游：`configs/upstream-glm-local.example.json`
-- Probe 模型映射：`configs/probe-models.example.json`
-- 工具目录：`configs/tool-catalog.example.json`
+- `configs/runtime-settings.example.json`
+- `configs/upstream-glm-local.example.json`
+- `configs/probe-models.example.json`
+- `configs/tool-catalog.example.json`

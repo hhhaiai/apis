@@ -293,3 +293,50 @@ func TestRouterServiceParallelJudgeSelectsBetterCandidate(t *testing.T) {
 		t.Fatalf("expected judge_enabled=true")
 	}
 }
+
+func TestRouterServiceUpdateUpstreamConfig(t *testing.T) {
+	svc := NewRouterService(RouterConfig{
+		DefaultRoute: []string{"a1"},
+	}, []Adapter{
+		NewMockAdapter("a1", false),
+	})
+
+	updated, err := svc.UpdateUpstreamConfig(UpstreamAdminConfig{
+		Adapters: []AdapterSpec{
+			{
+				Name:    "script-a1",
+				Kind:    AdapterKindScript,
+				Command: "bash",
+				Args:    []string{"-lc", "cat >/dev/null; echo '{\"text\":\"ok\"}'"},
+				Model:   "script-model",
+			},
+		},
+		DefaultRoute: []string{"script-a1"},
+		ModelRoutes: map[string][]string{
+			"*": []string{"script-a1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update upstream config failed: %v", err)
+	}
+	if len(updated.Adapters) != 1 || updated.Adapters[0].Name != "script-a1" {
+		t.Fatalf("unexpected adapters after update: %+v", updated.Adapters)
+	}
+	if len(updated.DefaultRoute) != 1 || updated.DefaultRoute[0] != "script-a1" {
+		t.Fatalf("unexpected default route after update: %+v", updated.DefaultRoute)
+	}
+
+	resp, err := svc.Complete(context.Background(), orchestrator.Request{
+		Model:     "m1",
+		MaxTokens: 32,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete after update failed: %v", err)
+	}
+	if len(resp.Blocks) != 1 || resp.Blocks[0].Text != "ok" {
+		t.Fatalf("unexpected response after update: %+v", resp)
+	}
+}

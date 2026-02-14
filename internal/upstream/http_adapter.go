@@ -23,6 +23,7 @@ const (
 	AdapterKindAnthropic AdapterKind = "anthropic"
 	AdapterKindGemini    AdapterKind = "gemini"
 	AdapterKindCanonical AdapterKind = "canonical"
+	AdapterKindScript    AdapterKind = "script"
 )
 
 type HTTPAdapterConfig struct {
@@ -121,6 +122,23 @@ func (a *HTTPAdapter) ModelHint() string {
 	return a.model
 }
 
+func (a *HTTPAdapter) AdminSpec() AdapterSpec {
+	return AdapterSpec{
+		Name:               a.name,
+		Kind:               a.kind,
+		BaseURL:            a.baseURL,
+		Endpoint:           a.endpoint,
+		APIKey:             a.apiKey,
+		Headers:            copyHeaders(a.headers),
+		Model:              a.model,
+		UserAgent:          a.userAgent,
+		APIKeyHeader:       a.apiKeyHeader,
+		ForceStream:        a.forceStream,
+		StreamOptions:      copyAnyMap(a.streamOptions),
+		InsecureSkipVerify: false,
+	}
+}
+
 func (a *HTTPAdapter) Complete(ctx context.Context, req orchestrator.Request) (orchestrator.Response, error) {
 	switch a.kind {
 	case AdapterKindOpenAI:
@@ -148,6 +166,11 @@ func (a *HTTPAdapter) Stream(ctx context.Context, req orchestrator.Request) (<-c
 		switch a.kind {
 		case AdapterKindAnthropic:
 			if err := a.streamAnthropic(ctx, req, events); err != nil {
+				errs <- err
+			}
+			return
+		case AdapterKindOpenAI:
+			if err := a.streamOpenAI(ctx, req, events); err != nil {
 				errs <- err
 			}
 			return
@@ -520,6 +543,85 @@ func (a *HTTPAdapter) streamAnthropic(ctx context.Context, req orchestrator.Requ
 	})
 }
 
+func (a *HTTPAdapter) streamOpenAI(ctx context.Context, req orchestrator.Request, out chan<- orchestrator.StreamEvent) error {
+	model := req.Model
+	if a.model != "" {
+		model = a.model
+	}
+
+	payload := map[string]any{
+		"model":      model,
+		"max_tokens": req.MaxTokens,
+		"messages":   canonicalToOpenAIMessages(req.System, req.Messages),
+		"stream":     true,
+	}
+	if len(req.Tools) > 0 {
+		payload["tools"] = canonicalToOpenAITools(req.Tools)
+	}
+	if v, ok := req.Metadata["temperature"]; ok {
+		payload["temperature"] = v
+	}
+	if v, ok := req.Metadata["top_p"]; ok {
+		payload["top_p"] = v
+	}
+	streamOptions := mergeStreamOptions(a.streamOptions, req.Metadata["stream_options"])
+	if len(streamOptions) == 0 {
+		streamOptions = map[string]any{"include_usage": true}
+	}
+	payload["stream_options"] = streamOptions
+
+	httpReq, err := a.newJSONRequest(ctx, payload, req.Headers, model)
+	if err != nil {
+		return err
+	}
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	ctype := strings.ToLower(strings.TrimSpace(resp.Header.Get("content-type")))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		return fmt.Errorf("adapter %s upstream status %d: %s", a.name, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// Some upstreams ignore stream=true and return normal JSON body.
+	if !strings.Contains(ctype, "text/event-stream") {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		if err != nil {
+			return err
+		}
+		parsed, err := parseOpenAIJSONResponse(body)
+		if err != nil {
+			return err
+		}
+		blocks := openAIBlocksFromParsed(parsed)
+		resp := orchestrator.Response{
+			Model:      model,
+			Blocks:     blocks,
+			StopReason: normalizeOpenAIStopReason(parsed.FinishReason, len(parsed.ToolCalls) > 0),
+			Usage: orchestrator.Usage{
+				InputTokens:  parsed.PromptTokens,
+				OutputTokens: parsed.CompletionTokens,
+			},
+		}
+		emitResponseAsStream(out, resp)
+		return nil
+	}
+
+	state := newOpenAIAnthropicStreamState()
+	out <- orchestrator.StreamEvent{Type: "message_start"}
+
+	if err := readSSE(resp.Body, func(_ string, data []byte) error {
+		return state.consumeChunk(data, out)
+	}); err != nil {
+		return err
+	}
+	state.finish(out)
+	return nil
+}
+
 func (a *HTTPAdapter) doJSON(ctx context.Context, payload any, reqHeaders map[string]string, upstreamModel string) ([]byte, error) {
 	httpReq, err := a.newJSONRequest(ctx, payload, reqHeaders, upstreamModel)
 	if err != nil {
@@ -843,6 +945,191 @@ type openAIStreamChunk struct {
 	} `json:"usage"`
 }
 
+type openAIToolStreamState struct {
+	BlockIndex int
+	ID         string
+	Name       string
+	Started    bool
+	Pending    []string
+}
+
+type openAIAnthropicStreamState struct {
+	nextIndex    int
+	textOpen     bool
+	textIndex    int
+	tools        map[int]*openAIToolStreamState
+	finishReason string
+	usage        orchestrator.Usage
+}
+
+func newOpenAIAnthropicStreamState() *openAIAnthropicStreamState {
+	return &openAIAnthropicStreamState{
+		nextIndex: 0,
+		tools:     map[int]*openAIToolStreamState{},
+	}
+}
+
+func (s *openAIAnthropicStreamState) consumeChunk(data []byte, out chan<- orchestrator.StreamEvent) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "[DONE]" {
+		return nil
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil
+	}
+	if rawErr, ok := top["error"]; ok && len(rawErr) > 0 {
+		return fmt.Errorf("openai stream returned error: %s", strings.TrimSpace(string(rawErr)))
+	}
+
+	var chunk openAIStreamChunk
+	if err := json.Unmarshal(data, &chunk); err != nil {
+		return nil
+	}
+	if chunk.Usage.PromptTokens > 0 {
+		s.usage.InputTokens = chunk.Usage.PromptTokens
+	}
+	if chunk.Usage.CompletionTokens > 0 {
+		s.usage.OutputTokens = chunk.Usage.CompletionTokens
+	}
+
+	for _, choice := range chunk.Choices {
+		if choice.Delta.Content != "" {
+			if !s.textOpen {
+				s.textOpen = true
+				s.textIndex = s.nextIndex
+				s.nextIndex++
+				out <- orchestrator.StreamEvent{
+					Type:  "content_block_start",
+					Index: s.textIndex,
+					Block: orchestrator.AssistantBlock{Type: "text"},
+				}
+			}
+			out <- orchestrator.StreamEvent{
+				Type:      "content_block_delta",
+				Index:     s.textIndex,
+				DeltaText: choice.Delta.Content,
+			}
+		}
+
+		for _, tc := range choice.Delta.ToolCalls {
+			toolState := s.tools[tc.Index]
+			if toolState == nil {
+				toolState = &openAIToolStreamState{
+					BlockIndex: s.nextIndex,
+				}
+				s.tools[tc.Index] = toolState
+				s.nextIndex++
+			}
+			if strings.TrimSpace(tc.ID) != "" {
+				toolState.ID = strings.TrimSpace(tc.ID)
+			}
+			if strings.TrimSpace(tc.Function.Name) != "" {
+				toolState.Name = strings.TrimSpace(tc.Function.Name)
+			}
+			if tc.Function.Arguments != "" {
+				if toolState.Started {
+					out <- orchestrator.StreamEvent{
+						Type:      "content_block_delta",
+						Index:     toolState.BlockIndex,
+						DeltaJSON: tc.Function.Arguments,
+					}
+				} else {
+					toolState.Pending = append(toolState.Pending, tc.Function.Arguments)
+				}
+			}
+			if !toolState.Started && toolState.Name != "" {
+				if s.textOpen {
+					out <- orchestrator.StreamEvent{Type: "content_block_stop", Index: s.textIndex}
+					s.textOpen = false
+				}
+				toolState.Started = true
+				if toolState.ID == "" {
+					toolState.ID = fmt.Sprintf("toolu_%d", tc.Index)
+				}
+				out <- orchestrator.StreamEvent{
+					Type:  "content_block_start",
+					Index: toolState.BlockIndex,
+					Block: orchestrator.AssistantBlock{
+						Type: "tool_use",
+						ID:   toolState.ID,
+						Name: toolState.Name,
+					},
+				}
+				for _, pending := range toolState.Pending {
+					if pending == "" {
+						continue
+					}
+					out <- orchestrator.StreamEvent{
+						Type:      "content_block_delta",
+						Index:     toolState.BlockIndex,
+						DeltaJSON: pending,
+					}
+				}
+				toolState.Pending = nil
+			}
+		}
+
+		if strings.TrimSpace(choice.FinishReason) != "" {
+			s.finishReason = choice.FinishReason
+		}
+	}
+	return nil
+}
+
+func (s *openAIAnthropicStreamState) finish(out chan<- orchestrator.StreamEvent) {
+	if s.textOpen {
+		out <- orchestrator.StreamEvent{Type: "content_block_stop", Index: s.textIndex}
+		s.textOpen = false
+	}
+
+	indexes := make([]int, 0, len(s.tools))
+	for idx := range s.tools {
+		indexes = append(indexes, idx)
+	}
+	sort.Ints(indexes)
+	for _, idx := range indexes {
+		toolState := s.tools[idx]
+		if !toolState.Started {
+			if toolState.ID == "" {
+				toolState.ID = fmt.Sprintf("toolu_%d", idx)
+			}
+			if toolState.Name == "" {
+				toolState.Name = "tool_call"
+			}
+			out <- orchestrator.StreamEvent{
+				Type:  "content_block_start",
+				Index: toolState.BlockIndex,
+				Block: orchestrator.AssistantBlock{
+					Type: "tool_use",
+					ID:   toolState.ID,
+					Name: toolState.Name,
+				},
+			}
+			for _, pending := range toolState.Pending {
+				if pending == "" {
+					continue
+				}
+				out <- orchestrator.StreamEvent{
+					Type:      "content_block_delta",
+					Index:     toolState.BlockIndex,
+					DeltaJSON: pending,
+				}
+			}
+			toolState.Pending = nil
+			toolState.Started = true
+		}
+		out <- orchestrator.StreamEvent{Type: "content_block_stop", Index: toolState.BlockIndex}
+	}
+
+	out <- orchestrator.StreamEvent{
+		Type:       "message_delta",
+		StopReason: normalizeOpenAIStopReason(s.finishReason, len(s.tools) > 0),
+		Usage:      s.usage,
+	}
+	out <- orchestrator.StreamEvent{Type: "message_stop"}
+}
+
 func parseOpenAIJSONResponse(raw []byte) (openAIParsed, error) {
 	var out struct {
 		Model   string `json:"model"`
@@ -1038,11 +1325,15 @@ func normalizeGeminiStopReason(finish string, hasToolCalls bool) string {
 func canonicalToOpenAITools(tools []orchestrator.Tool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
+		desc := strings.TrimSpace(t.Description)
+		if desc == "" {
+			desc = "No description provided"
+		}
 		out = append(out, map[string]any{
 			"type": "function",
 			"function": map[string]any{
 				"name":        t.Name,
-				"description": t.Description,
+				"description": desc,
 				"parameters":  t.InputSchema,
 			},
 		})

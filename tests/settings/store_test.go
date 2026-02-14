@@ -84,3 +84,29 @@ func TestStorePromptAndRoute(t *testing.T) {
 		t.Fatalf("expected max steps=5, got %d", cfg.ToolLoop.MaxSteps)
 	}
 }
+
+func TestStoreResolveModelMapping(t *testing.T) {
+	s := NewStore(RuntimeSettings{
+		ModelMappings: map[string]string{
+			"claude-*": "qwen-max",
+		},
+		ModelMapStrict:   true,
+		ModelMapFallback: "fallback-model",
+	})
+
+	got, err := s.ResolveModelMapping("claude-3-7-sonnet")
+	if err != nil {
+		t.Fatalf("resolve model mapping failed: %v", err)
+	}
+	if got != "qwen-max" {
+		t.Fatalf("expected qwen-max, got %q", got)
+	}
+
+	got, err = s.ResolveModelMapping("unknown-model")
+	if err != nil {
+		t.Fatalf("resolve fallback model mapping failed: %v", err)
+	}
+	if got != "fallback-model" {
+		t.Fatalf("expected fallback-model, got %q", got)
+	}
+}

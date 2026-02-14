@@ -166,6 +166,14 @@
           </div>
         </div>
         <div class="form-group" style="margin-top:20px"><label>Mode → Model Overrides (JSON)</label><textarea class="json-editor" id="set-mode-models"></textarea></div>
+        <div class="form-group"><label>Runtime Model Mappings (JSON)</label><textarea class="json-editor" id="set-model-mappings"></textarea></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+          <div class="form-group" style="display:flex;align-items:center;gap:12px;margin-top:8px">
+            <label style="margin:0">Model Mapping Strict</label>
+            <label class="toggle"><input type="checkbox" id="set-model-map-strict"><span class="slider"></span></label>
+          </div>
+          <div class="form-group"><label>Model Mapping Fallback</label><input type="text" id="set-model-map-fallback" placeholder="fallback-model"></div>
+        </div>
         <div class="form-group"><label>Prompt Prefixes (JSON)</label><textarea class="json-editor" id="set-prompts"></textarea></div>
         <div class="form-group"><label>Mode Routes (JSON)</label><textarea class="json-editor" id="set-routes"></textarea></div>
       </div>
@@ -178,6 +186,16 @@
       <div class="panel">
         <div class="panel-head"><h3>Active Mode Routes</h3></div>
         <table><thead><tr><th>Mode</th><th>Model Chain</th></tr></thead><tbody id="route-tbody"></tbody></table>
+      </div>
+      <div class="panel" style="padding:20px">
+        <div class="panel-head" style="padding:0 0 12px 0;border-bottom:none">
+          <h3>Upstream Adapters (JSON)</h3>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-outline btn-sm" onclick="loadUpstreamAdmin()">Refresh</button>
+            <button class="btn btn-primary btn-sm" onclick="saveUpstreamAdmin()">Apply</button>
+          </div>
+        </div>
+        <textarea id="upstream-admin-json" class="json-editor" style="min-height:220px"></textarea>
       </div>
     </section>
 
@@ -551,6 +569,9 @@ async function loadSettings(){
     document.getElementById('set-judge').checked=!!s.routing?.enable_response_judge;
     document.getElementById('set-experimental').checked=!!s.allow_experimental_tools;
     document.getElementById('set-mode-models').value=JSON.stringify(s.mode_models||{},null,2);
+    document.getElementById('set-model-mappings').value=JSON.stringify(s.model_mappings||{},null,2);
+    document.getElementById('set-model-map-strict').checked=!!s.model_map_strict;
+    document.getElementById('set-model-map-fallback').value=s.model_map_fallback||'';
     document.getElementById('set-prompts').value=JSON.stringify(s.prompt_prefixes||{},null,2);
     document.getElementById('set-routes').value=JSON.stringify(s.routing?.mode_routes||{},null,2);
   }catch(e){}
@@ -561,6 +582,9 @@ async function saveSettings(){
     const body={
       use_mode_model_override:Object.keys(JSON.parse(document.getElementById('set-mode-models').value||'{}')).length>0,
       mode_models:JSON.parse(document.getElementById('set-mode-models').value||'{}'),
+      model_mappings:JSON.parse(document.getElementById('set-model-mappings').value||'{}'),
+      model_map_strict:document.getElementById('set-model-map-strict').checked,
+      model_map_fallback:(document.getElementById('set-model-map-fallback').value||'').trim(),
       prompt_prefixes:JSON.parse(document.getElementById('set-prompts').value||'{}'),
       allow_experimental_tools:document.getElementById('set-experimental').checked,
       allow_unknown_tools:true,
@@ -584,12 +608,34 @@ async function loadModels(){
   try{
     const s=await api('/admin/settings');
     const modes=s.mode_models||{};
-    const mc=Object.entries(modes);
-    document.getElementById('model-cards').innerHTML=mc.length?mc.map(([m,v])=>`<div class="card"><div class="label">${m}</div><div class="value" style="font-size:16px;font-family:monospace">${v}</div></div>`).join(''):'<div class="card"><div class="label">Default</div><div class="value" style="font-size:14px;color:var(--text2)">No mode overrides configured</div></div>';
+    const runtimeMap=s.model_mappings||{};
+    const modeCards=Object.entries(modes).map(([m,v])=>`<div class="card"><div class="label">Mode ${m}</div><div class="value" style="font-size:16px;font-family:monospace">${v}</div></div>`);
+    const mapCards=Object.entries(runtimeMap).map(([m,v])=>`<div class="card"><div class="label">Map ${m}</div><div class="value" style="font-size:16px;font-family:monospace">${v}</div></div>`);
+    const cards=[...modeCards,...mapCards];
+    document.getElementById('model-cards').innerHTML=cards.length?cards.join(''):'<div class="card"><div class="label">Default</div><div class="value" style="font-size:14px;color:var(--text2)">No model settings configured</div></div>';
     const routes=s.routing?.mode_routes||{};
     const re=Object.entries(routes);
     document.getElementById('route-tbody').innerHTML=re.length?re.map(([m,chain])=>`<tr><td>${m}</td><td style="font-family:monospace;font-size:12px">${chain.join(' → ')}</td></tr>`).join(''):'<tr><td colspan="2" style="color:var(--text2)">No routes configured</td></tr>';
+    loadUpstreamAdmin();
   }catch(e){}
+}
+
+async function loadUpstreamAdmin(){
+  try{
+    const cfg=await api('/admin/upstream');
+    document.getElementById('upstream-admin-json').value=JSON.stringify(cfg||{},null,2);
+  }catch(e){}
+}
+
+async function saveUpstreamAdmin(){
+  try{
+    const body=JSON.parse(document.getElementById('upstream-admin-json').value||'{}');
+    const updated=await api('/admin/upstream',{method:'PUT',body:JSON.stringify(body)});
+    document.getElementById('upstream-admin-json').value=JSON.stringify(updated||{},null,2);
+    toast('Upstream config applied');
+  }catch(e){
+    toast('Failed to apply upstream config: '+e.message,false);
+  }
 }
 
 // TOOLS

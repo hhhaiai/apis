@@ -9,6 +9,7 @@ import (
 	"ccgateway/internal/scheduler"
 	"ccgateway/internal/settings"
 	"ccgateway/internal/toolcatalog"
+	"ccgateway/internal/upstream"
 )
 
 func (s *server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +36,90 @@ func (s *server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(s.settings.Get())
+	default:
+		s.writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+	}
+}
+
+func (s *server) handleAdminModelMapping(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	if s.settings == nil {
+		s.writeError(w, http.StatusNotImplemented, "api_error", "settings store is not configured")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		cfg := s.settings.Get()
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model_mappings":     cfg.ModelMappings,
+			"model_map_strict":   cfg.ModelMapStrict,
+			"model_map_fallback": cfg.ModelMapFallback,
+		})
+	case http.MethodPut:
+		var req struct {
+			ModelMappings    map[string]string `json:"model_mappings"`
+			ModelMapStrict   bool              `json:"model_map_strict"`
+			ModelMapFallback string            `json:"model_map_fallback"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
+			return
+		}
+		cfg := s.settings.Get()
+		cfg.ModelMappings = req.ModelMappings
+		cfg.ModelMapStrict = req.ModelMapStrict
+		cfg.ModelMapFallback = strings.TrimSpace(req.ModelMapFallback)
+		s.settings.Put(cfg)
+
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model_mappings":     cfg.ModelMappings,
+			"model_map_strict":   cfg.ModelMapStrict,
+			"model_map_fallback": cfg.ModelMapFallback,
+		})
+	default:
+		s.writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+	}
+}
+
+func (s *server) handleAdminUpstream(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAdmin(w, r) {
+		return
+	}
+	upstreamAdmin, ok := s.orchestrator.(interface {
+		GetUpstreamConfig() upstream.UpstreamAdminConfig
+		UpdateUpstreamConfig(cfg upstream.UpstreamAdminConfig) (upstream.UpstreamAdminConfig, error)
+	})
+	if !ok {
+		s.writeError(w, http.StatusNotImplemented, "api_error", "orchestrator does not support upstream admin config")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(upstreamAdmin.GetUpstreamConfig())
+	case http.MethodPut:
+		var cfg upstream.UpstreamAdminConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
+			return
+		}
+		updated, err := upstreamAdmin.UpdateUpstreamConfig(cfg)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(updated)
 	default:
 		s.writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 	}

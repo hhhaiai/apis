@@ -8,6 +8,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"ccgateway/internal/orchestrator"
@@ -27,7 +28,9 @@ type RouterConfig struct {
 }
 
 type RouterService struct {
+	mu                 sync.RWMutex
 	adapters           map[string]Adapter
+	adapterSpecs       []AdapterSpec
 	adapterOrder       []string
 	routesExact        map[string][]string
 	routePatterns      []routePattern
@@ -57,6 +60,7 @@ type CandidateSelector interface {
 func NewRouterService(cfg RouterConfig, adapters []Adapter) *RouterService {
 	adapterMap := make(map[string]Adapter, len(adapters))
 	order := make([]string, 0, len(adapters))
+	specs := make([]AdapterSpec, 0, len(adapters))
 	for _, a := range adapters {
 		if a == nil {
 			continue
@@ -67,6 +71,7 @@ func NewRouterService(cfg RouterConfig, adapters []Adapter) *RouterService {
 		}
 		adapterMap[name] = a
 		order = append(order, name)
+		specs = append(specs, snapshotAdapterSpec(a))
 	}
 
 	timeout := cfg.Timeout
@@ -89,6 +94,7 @@ func NewRouterService(cfg RouterConfig, adapters []Adapter) *RouterService {
 	exact, patterns := splitRoutes(cfg.Routes)
 	return &RouterService{
 		adapters:           adapterMap,
+		adapterSpecs:       specs,
 		adapterOrder:       order,
 		routesExact:        exact,
 		routePatterns:      patterns,
@@ -112,11 +118,13 @@ func (s *RouterService) Complete(ctx context.Context, req orchestrator.Request) 
 	if len(candidates) == 0 {
 		return orchestrator.Response{}, fmt.Errorf("no upstream adapter available")
 	}
+	s.mu.RLock()
 	retries := s.retries
 	timeout := s.timeout
 	reflectPasses := s.reflectPasses
 	parallelCandidates := s.parallelCandidates
 	enableJudge := s.enableJudge
+	s.mu.RUnlock()
 	if req.Metadata != nil {
 		if v, ok := intFromAny(req.Metadata["routing_retries"]); ok && v >= 0 {
 			retries = v
@@ -185,7 +193,9 @@ func (s *RouterService) Stream(ctx context.Context, req orchestrator.Request) (<
 			}
 		}
 		for _, name := range candidates {
+			s.mu.RLock()
 			adapter, ok := s.adapters[name]
+			s.mu.RUnlock()
 			if !ok {
 				lastErr = fmt.Errorf("adapter %q not registered", name)
 				continue
@@ -373,7 +383,9 @@ func (s *RouterService) runCandidate(
 	retries int,
 	timeout time.Duration,
 ) candidateResult {
+	s.mu.RLock()
 	adapter, ok := s.adapters[name]
+	s.mu.RUnlock()
 	if !ok {
 		return candidateResult{
 			candidateName: name,
@@ -495,6 +507,8 @@ func (s *RouterService) routeForRequest(req orchestrator.Request) []string {
 	if route := routeFromMetadata(req.Metadata); len(route) > 0 {
 		return route
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	// Dispatcher-based routing: if enabled and election is done, use it
 	if s.dispatcher != nil {
 		if dispatched := s.dispatcher.RouteRequest(req, s.adapterOrder); len(dispatched) > 0 {
@@ -544,6 +558,129 @@ func splitRoutes(in map[string][]string) (map[string][]string, []routePattern) {
 		return patterns[i].specificity > patterns[j].specificity
 	})
 	return exact, patterns
+}
+
+func (s *RouterService) GetUpstreamConfig() UpstreamAdminConfig {
+	return s.snapshotUpstreamConfig(true)
+}
+
+func (s *RouterService) snapshotUpstreamConfig(maskSecrets bool) UpstreamAdminConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := UpstreamAdminConfig{
+		Adapters:     cloneAdapterSpecs(s.adapterSpecs, maskSecrets),
+		DefaultRoute: append([]string(nil), s.defaultRoute...),
+		ModelRoutes:  composeRoutesForAdmin(s.routesExact, s.routePatterns),
+	}
+	return out
+}
+
+func (s *RouterService) UpdateUpstreamConfig(cfg UpstreamAdminConfig) (UpstreamAdminConfig, error) {
+	current := s.snapshotUpstreamConfig(false)
+	if len(cfg.Adapters) == 0 {
+		cfg.Adapters = current.Adapters
+	}
+	if cfg.ModelRoutes == nil {
+		cfg.ModelRoutes = current.ModelRoutes
+	}
+	if len(cfg.DefaultRoute) == 0 {
+		cfg.DefaultRoute = current.DefaultRoute
+	}
+
+	adapters, err := BuildAdaptersFromSpecs(cfg.Adapters)
+	if err != nil {
+		return UpstreamAdminConfig{}, err
+	}
+	if len(adapters) == 0 {
+		return UpstreamAdminConfig{}, fmt.Errorf("at least one adapter is required")
+	}
+
+	adapterMap := make(map[string]Adapter, len(adapters))
+	order := make([]string, 0, len(adapters))
+	specs := make([]AdapterSpec, 0, len(adapters))
+	for _, adapter := range adapters {
+		if adapter == nil {
+			continue
+		}
+		name := strings.TrimSpace(adapter.Name())
+		if name == "" {
+			continue
+		}
+		adapterMap[name] = adapter
+		order = append(order, name)
+		specs = append(specs, snapshotAdapterSpec(adapter))
+	}
+	if len(order) == 0 {
+		return UpstreamAdminConfig{}, fmt.Errorf("no valid adapters")
+	}
+
+	routes := cleanModelRoutes(cfg.ModelRoutes)
+	for model, route := range routes {
+		if len(route) == 0 {
+			continue
+		}
+		for _, adapterName := range route {
+			if _, ok := adapterMap[adapterName]; !ok {
+				return UpstreamAdminConfig{}, fmt.Errorf("route %q references unknown adapter %q", model, adapterName)
+			}
+		}
+	}
+
+	defaultRoute := cleanRoute(cfg.DefaultRoute)
+	if len(defaultRoute) == 0 {
+		defaultRoute = append([]string(nil), order...)
+	}
+	for _, adapterName := range defaultRoute {
+		if _, ok := adapterMap[adapterName]; !ok {
+			return UpstreamAdminConfig{}, fmt.Errorf("default route references unknown adapter %q", adapterName)
+		}
+	}
+
+	exact, patterns := splitRoutes(routes)
+
+	s.mu.Lock()
+	s.adapters = adapterMap
+	s.adapterOrder = order
+	s.adapterSpecs = specs
+	s.defaultRoute = defaultRoute
+	s.routesExact = exact
+	s.routePatterns = patterns
+	s.mu.Unlock()
+
+	return s.GetUpstreamConfig(), nil
+}
+
+func cloneAdapterSpecs(in []AdapterSpec, maskSecrets bool) []AdapterSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]AdapterSpec, 0, len(in))
+	for _, spec := range in {
+		copySpec := sanitizeAdapterSpec(spec)
+		if maskSecrets && strings.TrimSpace(copySpec.APIKey) != "" {
+			copySpec.APIKey = "***"
+		}
+		out = append(out, copySpec)
+	}
+	return out
+}
+
+func snapshotAdapterSpec(adapter Adapter) AdapterSpec {
+	if provider, ok := adapter.(interface{ AdminSpec() AdapterSpec }); ok {
+		return sanitizeAdapterSpec(provider.AdminSpec())
+	}
+	return AdapterSpec{
+		Name: strings.TrimSpace(adapter.Name()),
+	}
+}
+
+func composeRoutesForAdmin(exact map[string][]string, patterns []routePattern) map[string][]string {
+	out := cloneRoutes(exact)
+	for _, p := range patterns {
+		out[p.pattern] = append([]string(nil), p.adapters...)
+	}
+	return out
 }
 
 func routeFromMetadata(metadata map[string]any) []string {

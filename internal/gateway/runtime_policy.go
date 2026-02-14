@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -27,6 +28,30 @@ func (s *server) resolveModelByMode(mode, requested string) string {
 		return requested
 	}
 	return s.settings.ResolveModel(mode, requested)
+}
+
+func (s *server) resolveUpstreamModel(mode, clientModel string) (string, string, error) {
+	requested := s.resolveModelByMode(mode, clientModel)
+	mapped := requested
+
+	if s.settings != nil {
+		m, err := s.settings.ResolveModelMapping(requested)
+		if err != nil {
+			return requested, "", err
+		}
+		mapped = strings.TrimSpace(m)
+	}
+	if strings.TrimSpace(mapped) == "" {
+		return requested, "", fmt.Errorf("model is required")
+	}
+	if s.modelMapper != nil {
+		finalMapped, err := s.modelMapper.Resolve(mapped)
+		if err != nil {
+			return requested, "", err
+		}
+		mapped = finalMapped
+	}
+	return requested, mapped, nil
 }
 
 func (s *server) applySystemPromptPrefix(mode string, system any) any {

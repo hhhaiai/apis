@@ -103,8 +103,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	req.System = s.applySystemPromptPrefix(mode, req.System)
 	req.Metadata = s.applyRoutingPolicy(mode, req.Metadata)
 
-	requestedModel = s.resolveModelByMode(mode, clientModel)
-	mappedModel, err := s.modelMapper.Resolve(requestedModel)
+	requestedModel, mappedModel, err := s.resolveUpstreamModel(mode, clientModel)
 	if err != nil {
 		statusCode = http.StatusBadRequest
 		errText = err.Error()
@@ -304,8 +303,7 @@ func (s *server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	mode := requestMode(r, nil)
 	clientModel := req.Model
-	requestedModel := s.resolveModelByMode(mode, clientModel)
-	mappedModel, err := s.modelMapper.Resolve(requestedModel)
+	requestedModel, mappedModel, err := s.resolveUpstreamModel(mode, clientModel)
 	if err != nil {
 		statusCode = http.StatusBadRequest
 		errText = err.Error()

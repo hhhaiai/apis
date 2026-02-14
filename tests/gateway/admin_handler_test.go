@@ -183,6 +183,101 @@ func TestAdminSchedulerAndProbeStatus(t *testing.T) {
 	}
 }
 
+func TestAdminModelMappingUpdate(t *testing.T) {
+	svc := orchestrator.NewSimpleService()
+	st := settings.NewStore(settings.DefaultRuntimeSettings())
+	router := NewRouter(Dependencies{
+		Orchestrator: svc,
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		Settings:     st,
+		AdminToken:   "secret-admin",
+	})
+
+	putBody := `{
+		"model_mappings":{"claude-test":"upstream-claude"},
+		"model_map_strict":true,
+		"model_map_fallback":"fallback-model"
+	}`
+	reqPut := httptest.NewRequest(http.MethodPut, "/admin/model-mapping", strings.NewReader(putBody))
+	reqPut.Header.Set("authorization", "Bearer secret-admin")
+	rrPut := httptest.NewRecorder()
+	router.ServeHTTP(rrPut, reqPut)
+	if rrPut.Code != http.StatusOK {
+		t.Fatalf("expected 200 for put admin model mapping, got %d; body=%s", rrPut.Code, rrPut.Body.String())
+	}
+
+	reqGet := httptest.NewRequest(http.MethodGet, "/admin/model-mapping", nil)
+	reqGet.Header.Set("x-admin-token", "secret-admin")
+	rrGet := httptest.NewRecorder()
+	router.ServeHTTP(rrGet, reqGet)
+	if rrGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 for get admin model mapping, got %d; body=%s", rrGet.Code, rrGet.Body.String())
+	}
+
+	cfg := st.Get()
+	if cfg.ModelMappings["claude-test"] != "upstream-claude" {
+		t.Fatalf("unexpected mapping: %#v", cfg.ModelMappings)
+	}
+	if !cfg.ModelMapStrict {
+		t.Fatalf("expected strict mode enabled")
+	}
+	if cfg.ModelMapFallback != "fallback-model" {
+		t.Fatalf("unexpected fallback model: %q", cfg.ModelMapFallback)
+	}
+}
+
+func TestAdminUpstreamUpdate(t *testing.T) {
+	routerSvc := upstream.NewRouterService(upstream.RouterConfig{
+		DefaultRoute: []string{"mock-a"},
+	}, []upstream.Adapter{
+		upstream.NewMockAdapter("mock-a", false),
+	})
+	router := NewRouter(Dependencies{
+		Orchestrator: routerSvc,
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		AdminToken:   "secret-admin",
+	})
+
+	reqGet := httptest.NewRequest(http.MethodGet, "/admin/upstream", nil)
+	reqGet.Header.Set("authorization", "Bearer secret-admin")
+	rrGet := httptest.NewRecorder()
+	router.ServeHTTP(rrGet, reqGet)
+	if rrGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 for get admin upstream, got %d; body=%s", rrGet.Code, rrGet.Body.String())
+	}
+
+	putBody := `{
+		"adapters":[
+			{
+				"name":"script-a1",
+				"kind":"script",
+				"command":"bash",
+				"args":["-lc","cat >/dev/null; echo '{\"text\":\"ok\"}'"],
+				"model":"custom-script-model"
+			}
+		],
+		"default_route":["script-a1"],
+		"model_routes":{"*":["script-a1"]}
+	}`
+	reqPut := httptest.NewRequest(http.MethodPut, "/admin/upstream", strings.NewReader(putBody))
+	reqPut.Header.Set("authorization", "Bearer secret-admin")
+	rrPut := httptest.NewRecorder()
+	router.ServeHTTP(rrPut, reqPut)
+	if rrPut.Code != http.StatusOK {
+		t.Fatalf("expected 200 for put admin upstream, got %d; body=%s", rrPut.Code, rrPut.Body.String())
+	}
+
+	cfg := routerSvc.GetUpstreamConfig()
+	if len(cfg.Adapters) != 1 || cfg.Adapters[0].Name != "script-a1" {
+		t.Fatalf("unexpected adapters after update: %+v", cfg.Adapters)
+	}
+	if len(cfg.DefaultRoute) != 1 || cfg.DefaultRoute[0] != "script-a1" {
+		t.Fatalf("unexpected default route after update: %+v", cfg.DefaultRoute)
+	}
+}
+
 func TestAdminDashboardFallbackLegacyHTML(t *testing.T) {
 	router := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)

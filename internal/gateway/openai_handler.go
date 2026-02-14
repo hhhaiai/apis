@@ -98,8 +98,7 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	msgReq.System = s.applySystemPromptPrefix(mode, msgReq.System)
 	msgReq.Metadata = s.applyRoutingPolicy(mode, msgReq.Metadata)
 
-	requestedModel = s.resolveModelByMode(mode, clientModel)
-	mappedModel, err := s.modelMapper.Resolve(requestedModel)
+	requestedModel, mappedModel, err := s.resolveUpstreamModel(mode, clientModel)
 	if err != nil {
 		statusCode = http.StatusBadRequest
 		errText = err.Error()
@@ -315,8 +314,7 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	msgReq.System = s.applySystemPromptPrefix(mode, msgReq.System)
 	msgReq.Metadata = s.applyRoutingPolicy(mode, msgReq.Metadata)
 
-	requestedModel = s.resolveModelByMode(mode, clientModel)
-	mappedModel, err := s.modelMapper.Resolve(requestedModel)
+	requestedModel, mappedModel, err := s.resolveUpstreamModel(mode, clientModel)
 	if err != nil {
 		statusCode = http.StatusBadRequest
 		errText = err.Error()

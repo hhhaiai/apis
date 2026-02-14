@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 	"sync"
 )
@@ -11,6 +12,9 @@ import (
 type RuntimeSettings struct {
 	UseModeModelOverride   bool              `json:"use_mode_model_override"`
 	ModeModels             map[string]string `json:"mode_models"`
+	ModelMappings          map[string]string `json:"model_mappings"`
+	ModelMapStrict         bool              `json:"model_map_strict"`
+	ModelMapFallback       string            `json:"model_map_fallback"`
 	PromptPrefixes         map[string]string `json:"prompt_prefixes"`
 	AllowExperimentalTools bool              `json:"allow_experimental_tools"`
 	AllowUnknownTools      bool              `json:"allow_unknown_tools"`
@@ -41,6 +45,9 @@ func DefaultRuntimeSettings() RuntimeSettings {
 	return RuntimeSettings{
 		UseModeModelOverride:   false,
 		ModeModels:             map[string]string{},
+		ModelMappings:          map[string]string{},
+		ModelMapStrict:         false,
+		ModelMapFallback:       "",
 		PromptPrefixes:         map[string]string{},
 		AllowExperimentalTools: false,
 		AllowUnknownTools:      true,
@@ -108,6 +115,38 @@ func (s *Store) ResolveModel(mode, requestedModel string) string {
 	return requestedModel
 }
 
+func (s *Store) ResolveModelMapping(model string) (string, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", fmt.Errorf("model is required")
+	}
+	cfg := s.Get()
+	if target, ok := cfg.ModelMappings[model]; ok && strings.TrimSpace(target) != "" {
+		return strings.TrimSpace(target), nil
+	}
+	for pattern, target := range cfg.ModelMappings {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" || !strings.Contains(pattern, "*") {
+			continue
+		}
+		matched, err := path.Match(pattern, model)
+		if err != nil || !matched {
+			continue
+		}
+		target = strings.TrimSpace(target)
+		if target != "" {
+			return target, nil
+		}
+	}
+	if fb := strings.TrimSpace(cfg.ModelMapFallback); fb != "" {
+		return fb, nil
+	}
+	if cfg.ModelMapStrict {
+		return "", fmt.Errorf("model %q is not mapped", model)
+	}
+	return model, nil
+}
+
 func (s *Store) PromptPrefix(mode string) string {
 	mode = normalizeMode(mode)
 	cfg := s.Get()
@@ -148,6 +187,9 @@ func merge(defaults, in RuntimeSettings) RuntimeSettings {
 	if in.ModeModels != nil {
 		out.ModeModels = copyStringMap(in.ModeModels)
 	}
+	if in.ModelMappings != nil {
+		out.ModelMappings = copyStringMap(in.ModelMappings)
+	}
 	if in.PromptPrefixes != nil {
 		out.PromptPrefixes = copyStringMap(in.PromptPrefixes)
 	}
@@ -155,6 +197,8 @@ func merge(defaults, in RuntimeSettings) RuntimeSettings {
 		out.Routing.ModeRoutes = copyModeRoutes(in.Routing.ModeRoutes)
 	}
 	out.UseModeModelOverride = in.UseModeModelOverride
+	out.ModelMapStrict = in.ModelMapStrict
+	out.ModelMapFallback = strings.TrimSpace(in.ModelMapFallback)
 	out.AllowExperimentalTools = in.AllowExperimentalTools
 	out.AllowUnknownTools = in.AllowUnknownTools
 	if in.Routing.Retries != 0 {
@@ -184,6 +228,10 @@ func sanitize(in RuntimeSettings) RuntimeSettings {
 	if out.ModeModels == nil {
 		out.ModeModels = map[string]string{}
 	}
+	if out.ModelMappings == nil {
+		out.ModelMappings = map[string]string{}
+	}
+	out.ModelMapFallback = strings.TrimSpace(out.ModelMapFallback)
 	if out.PromptPrefixes == nil {
 		out.PromptPrefixes = map[string]string{}
 	}
@@ -221,6 +269,7 @@ func sanitize(in RuntimeSettings) RuntimeSettings {
 func clone(in RuntimeSettings) RuntimeSettings {
 	out := in
 	out.ModeModels = copyStringMap(in.ModeModels)
+	out.ModelMappings = copyStringMap(in.ModelMappings)
 	out.PromptPrefixes = copyStringMap(in.PromptPrefixes)
 	out.Routing.ModeRoutes = copyModeRoutes(in.Routing.ModeRoutes)
 	return out

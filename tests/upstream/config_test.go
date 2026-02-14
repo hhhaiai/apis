@@ -38,6 +38,34 @@ func TestParseAdaptersFromEnv(t *testing.T) {
 	}
 }
 
+func TestParseAdaptersFromEnv_Script(t *testing.T) {
+	t.Setenv("UPSTREAM_ADAPTERS_JSON", `[
+		{
+			"name":"script-a1",
+			"kind":"script",
+			"command":"bash",
+			"args":["-lc","cat >/dev/null; echo '{\"text\":\"ok\"}'"],
+			"model":"custom-script-model",
+			"timeout_ms":5000,
+			"max_output_bytes":1024
+		}
+	]`)
+
+	adapters, err := ParseAdaptersFromEnv()
+	if err != nil {
+		t.Fatalf("parse adapters failed: %v", err)
+	}
+	if len(adapters) != 1 {
+		t.Fatalf("expected one adapter, got %d", len(adapters))
+	}
+	if adapters[0].Name() != "script-a1" {
+		t.Fatalf("unexpected adapter name: %s", adapters[0].Name())
+	}
+	if _, ok := adapters[0].(*ScriptAdapter); !ok {
+		t.Fatalf("expected ScriptAdapter, got %T", adapters[0])
+	}
+}
+
 func TestParseBoolEnv(t *testing.T) {
 	t.Setenv("UPSTREAM_BOOL_FLAG", "true")
 	if !ParseBoolEnv("UPSTREAM_BOOL_FLAG", false) {

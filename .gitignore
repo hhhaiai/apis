@@ -1,2 +1,4 @@
 web/admin/node_modules/
 web/admin/dist/
+logs/*
+!logs/.gitkeep

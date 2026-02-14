@@ -31,61 +31,14 @@ func ParseRoutesFromEnv() (map[string][]string, error) {
 }
 
 func ParseAdaptersFromEnv() ([]Adapter, error) {
-	raw := strings.TrimSpace(os.Getenv("UPSTREAM_ADAPTERS_JSON"))
-	if raw == "" {
-		return nil, nil
-	}
-
-	type envAdapter struct {
-		Name               string            `json:"name"`
-		Kind               AdapterKind       `json:"kind"`
-		BaseURL            string            `json:"base_url"`
-		Endpoint           string            `json:"endpoint,omitempty"`
-		APIKey             string            `json:"api_key,omitempty"`
-		APIKeyEnv          string            `json:"api_key_env,omitempty"`
-		Headers            map[string]string `json:"headers,omitempty"`
-		Model              string            `json:"model,omitempty"`
-		UserAgent          string            `json:"user_agent,omitempty"`
-		APIKeyHeader       string            `json:"api_key_header,omitempty"`
-		ForceStream        bool              `json:"force_stream,omitempty"`
-		StreamOptions      map[string]any    `json:"stream_options,omitempty"`
-		InsecureSkipVerify bool              `json:"insecure_skip_verify,omitempty"`
-	}
-
-	var specs []envAdapter
-	if err := json.Unmarshal([]byte(raw), &specs); err != nil {
-		return nil, fmt.Errorf("invalid UPSTREAM_ADAPTERS_JSON: %w", err)
+	specs, err := ParseAdapterSpecsFromEnv()
+	if err != nil {
+		return nil, err
 	}
 	if len(specs) == 0 {
 		return nil, nil
 	}
-
-	out := make([]Adapter, 0, len(specs))
-	for _, spec := range specs {
-		apiKey := strings.TrimSpace(spec.APIKey)
-		if apiKey == "" && strings.TrimSpace(spec.APIKeyEnv) != "" {
-			apiKey = strings.TrimSpace(os.Getenv(spec.APIKeyEnv))
-		}
-		adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
-			Name:               spec.Name,
-			Kind:               spec.Kind,
-			BaseURL:            spec.BaseURL,
-			Endpoint:           spec.Endpoint,
-			APIKey:             apiKey,
-			Headers:            spec.Headers,
-			Model:              spec.Model,
-			UserAgent:          spec.UserAgent,
-			APIKeyHeader:       spec.APIKeyHeader,
-			ForceStream:        spec.ForceStream,
-			StreamOptions:      spec.StreamOptions,
-			InsecureSkipVerify: spec.InsecureSkipVerify,
-		}, nil)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, adapter)
-	}
-	return out, nil
+	return BuildAdaptersFromSpecs(specs)
 }
 
 func ParseDurationEnv(key string, fallback time.Duration) time.Duration {

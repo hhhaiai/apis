@@ -234,6 +234,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("/v1/cc/plugins", s.handleCCPlugins)
 	mux.HandleFunc("/v1/cc/plugins/", s.handleCCPluginByPath)
 	mux.HandleFunc("/admin/settings", s.handleAdminSettings)
+	mux.HandleFunc("/admin/model-mapping", s.handleAdminModelMapping)
+	mux.HandleFunc("/admin/upstream", s.handleAdminUpstream)
 	mux.HandleFunc("/v1/cc/skills", s.handleCCSkills)
 	mux.HandleFunc("/v1/cc/skills/", s.handleCCSkillByPath)
 	mux.HandleFunc("/admin/tools", s.handleAdminTools)

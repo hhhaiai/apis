@@ -1,8 +1,8 @@
 package upstream_test
 
 import (
-	. "ccgateway/internal/upstream"
 	"bufio"
+	. "ccgateway/internal/upstream"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -314,5 +314,104 @@ func TestHTTPAdapterAnthropicStreamPassThrough(t *testing.T) {
 	}
 	if !strings.Contains(string(got[0].RawData), `"message_start"`) {
 		t.Fatalf("unexpected raw data: %s", string(got[0].RawData))
+	}
+}
+
+func TestHTTPAdapterOpenAIStreamToAnthropicEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		writer := bufio.NewWriter(w)
+
+		_, _ = fmt.Fprintln(writer, `data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}`)
+		_, _ = fmt.Fprintln(writer)
+		_, _ = fmt.Fprintln(writer, `data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}`)
+		_, _ = fmt.Fprintln(writer)
+		_, _ = fmt.Fprintln(writer, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a"}}]},"finish_reason":null}]}`)
+		_, _ = fmt.Fprintln(writer)
+		_, _ = fmt.Fprintln(writer, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"bc\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":5}}`)
+		_, _ = fmt.Fprintln(writer)
+		_, _ = fmt.Fprintln(writer, `data: [DONE]`)
+		_, _ = fmt.Fprintln(writer)
+		_ = writer.Flush()
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "oa-stream",
+		Kind:    AdapterKindOpenAI,
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	events, errs := adapter.Stream(context.Background(), orchestrator.Request{
+		Model:     "gpt-test",
+		MaxTokens: 64,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hi"},
+		},
+		Metadata: map[string]any{
+			"strict_stream_passthrough": true,
+		},
+	})
+
+	var got []orchestrator.StreamEvent
+	for ev := range events {
+		got = append(got, ev)
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("stream failed: %v", err)
+		}
+	}
+
+	if len(got) < 8 {
+		t.Fatalf("expected at least 8 events, got %d", len(got))
+	}
+	if got[0].Type != "message_start" {
+		t.Fatalf("unexpected first event: %+v", got[0])
+	}
+	foundTextDelta := false
+	foundToolStart := false
+	foundToolDeltaA := false
+	foundToolDeltaB := false
+	foundMessageDelta := false
+	for _, ev := range got {
+		if ev.Type == "content_block_delta" && ev.DeltaText == "Hel" {
+			foundTextDelta = true
+		}
+		if ev.Type == "content_block_start" && ev.Block.Type == "tool_use" && ev.Block.Name == "read_file" {
+			foundToolStart = true
+		}
+		if ev.Type == "content_block_delta" && strings.Contains(ev.DeltaJSON, `{"path":"a`) {
+			foundToolDeltaA = true
+		}
+		if ev.Type == "content_block_delta" && strings.Contains(ev.DeltaJSON, `bc"}`) {
+			foundToolDeltaB = true
+		}
+		if ev.Type == "message_delta" && ev.StopReason == "tool_use" && ev.Usage.InputTokens == 11 && ev.Usage.OutputTokens == 5 {
+			foundMessageDelta = true
+		}
+	}
+	if !foundTextDelta {
+		t.Fatalf("missing text delta event: %+v", got)
+	}
+	if !foundToolStart {
+		t.Fatalf("missing tool_use start event: %+v", got)
+	}
+	if !foundToolDeltaA || !foundToolDeltaB {
+		t.Fatalf("missing tool_use delta json event: %+v", got)
+	}
+	if !foundMessageDelta {
+		t.Fatalf("missing message_delta with usage: %+v", got)
+	}
+	if got[len(got)-1].Type != "message_stop" {
+		t.Fatalf("unexpected last event: %+v", got[len(got)-1])
 	}
 }

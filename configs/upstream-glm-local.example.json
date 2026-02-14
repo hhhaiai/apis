@@ -1,33 +1,32 @@
 {
   "adapters": [
     {
-      "name": "glm-search",
+      "name": "glm-5",
       "kind": "openai",
       "base_url": "http://0.0.0.0:5025",
       "api_key": "free",
-      "model": "GLM-5-thinking-search",
+      "model": "GLM-5",
       "force_stream": true,
       "stream_options": {
         "include_usage": true
       }
     },
     {
-      "name": "glm-45",
+      "name": "glm-47",
       "kind": "openai",
       "base_url": "http://0.0.0.0:5022",
       "api_key": "free",
-      "model": "GLM-4.5",
+      "model": "GLM-4.7",
       "force_stream": true,
       "stream_options": {
         "include_usage": true
       }
     }
   ],
-  "default_route": ["glm-search", "glm-45"],
+  "default_route": ["glm-5", "glm-47"],
   "model_routes": {
-    "GLM-5-thinking-search": ["glm-search", "glm-45"],
-    "GLM-4.5": ["glm-45", "glm-search"],
-    "*": ["glm-search", "glm-45"]
+    "GLM-5": ["glm-5", "glm-47"],
+    "GLM-4.7": ["glm-47", "glm-5"],
+    "*": ["glm-5", "glm-47"]
   }
 }
-

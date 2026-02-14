@@ -443,6 +443,71 @@ func TestMessagesModelMappingStrictRejectsUnknownModel(t *testing.T) {
 	}
 }
 
+func TestMessagesRuntimeModelMappingsApplied(t *testing.T) {
+	svc := &captureService{}
+	st := settings.NewStore(settings.RuntimeSettings{
+		ModelMappings: map[string]string{
+			"claude-test": "runtime-upstream-model",
+		},
+	})
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: svc,
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		Settings:     st,
+	})
+
+	body := `{
+		"model":"claude-test",
+		"max_tokens":128,
+		"messages":[{"role":"user","content":"hello mapping"}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("anthropic-version", "2023-06-01")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("x-cc-requested-model"); got != "claude-test" {
+		t.Fatalf("unexpected requested model: %q", got)
+	}
+	if got := rr.Header().Get("x-cc-upstream-model"); got != "runtime-upstream-model" {
+		t.Fatalf("unexpected upstream model: %q", got)
+	}
+	if svc.capturedModel != "runtime-upstream-model" {
+		t.Fatalf("expected mapped upstream model, got %q", svc.capturedModel)
+	}
+}
+
+func TestMessagesRuntimeModelMappingsStrictRejectsUnknown(t *testing.T) {
+	st := settings.NewStore(settings.RuntimeSettings{
+		ModelMappings:  map[string]string{"known": "m1"},
+		ModelMapStrict: true,
+	})
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		Settings:     st,
+	})
+
+	body := `{
+		"model":"unknown-model",
+		"max_tokens":128,
+		"messages":[{"role":"user","content":"hello"}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("anthropic-version", "2023-06-01")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestMessagesStrictPassThroughStreamRewritesOutwardModel(t *testing.T) {
 	router := newTestRouterWithDeps(t, Dependencies{
 		Orchestrator: &passThroughService{},
