@@ -11,10 +11,13 @@ import (
 	"time"
 
 	"ccgateway/internal/agentteam"
+	"ccgateway/internal/auth"
 	"ccgateway/internal/ccevent"
 	"ccgateway/internal/ccrun"
+	"ccgateway/internal/channel"
 	"ccgateway/internal/eval"
 	"ccgateway/internal/mcpregistry"
+	"ccgateway/internal/memory"
 	"ccgateway/internal/modelmap"
 	"ccgateway/internal/orchestrator"
 	"ccgateway/internal/plan"
@@ -25,33 +28,40 @@ import (
 	"ccgateway/internal/settings"
 	"ccgateway/internal/subagent"
 	"ccgateway/internal/todo"
+	"ccgateway/internal/token"
 	"ccgateway/internal/toolcatalog"
 	"ccgateway/internal/toolruntime"
 )
 
 type Dependencies struct {
-	Orchestrator    orchestrator.Service
-	Policy          policy.Engine
-	ModelMapper     modelmap.Mapper
-	Settings        *settings.Store
-	ToolCatalog     *toolcatalog.Catalog
-	ToolExecutor    toolruntime.Executor
-	SessionStore    SessionStore
-	RunStore        RunStore
-	TodoStore       TodoStore
-	PlanStore       PlanStore
-	EventStore      EventStore
-	TeamStore       TeamStore
-	SubagentStore   SubagentStore
-	MCPRegistry     MCPRegistry
-	PluginStore     PluginStore
-	SkillEngine     SkillEngine
-	CostTracker     CostTracker
-	Evaluator       *eval.Evaluator
-	SchedulerStatus StatusProvider
-	ProbeStatus     StatusProvider
-	AdminToken      string
-	RunLogger       runlog.Logger
+	Orchestrator       orchestrator.Service
+	Policy             policy.Engine
+	ModelMapper        modelmap.Mapper
+	Settings           *settings.Store
+	ToolCatalog        ToolCatalogStore
+	ToolExecutor       toolruntime.Executor
+	SessionStore       SessionStore
+	RunStore           RunStore
+	TodoStore          TodoStore
+	PlanStore          PlanStore
+	EventStore         EventStore
+	TeamStore          TeamStore
+	SubagentStore      SubagentStore
+	MCPRegistry        MCPRegistry
+	PluginStore        PluginStore
+	MarketplaceService MarketplaceService
+	SkillEngine        SkillEngine
+	CostTracker        CostTracker
+	Evaluator          *eval.Evaluator
+	SchedulerStatus    StatusProvider
+	ProbeStatus        StatusProvider
+	AdminToken         string
+	RunLogger          runlog.Logger
+	MemoryStore        memory.MemoryStore
+	Summarizer         memory.Summarizer
+	AuthService        auth.Service
+	TokenService       token.Service
+	ChannelStore       ChannelStore
 }
 
 type StatusProvider interface {
@@ -143,30 +153,53 @@ type CostTracker interface {
 	Snapshot() map[string]any
 }
 
+// ChannelStore manages upstream channels
+type ChannelStore interface {
+	AddChannel(c *channel.Channel) error
+	UpdateChannel(c *channel.Channel) error
+	DeleteChannel(id int64) error
+	GetChannel(id int64) (*channel.Channel, bool)
+	ListChannels() []*channel.Channel
+	GetChannelByGroupAndModel(group, model string) (*channel.Channel, bool)
+	GetEnabledModels(group string) []string
+	UpdateChannelStatus(id int64, status int) error
+}
+
+type ToolCatalogStore interface {
+	Snapshot() []toolcatalog.ToolSpec
+	Replace([]toolcatalog.ToolSpec)
+}
+
 type server struct {
-	orchestrator    orchestrator.Service
-	policy          policy.Engine
-	modelMapper     modelmap.Mapper
-	settings        *settings.Store
-	toolCatalog     *toolcatalog.Catalog
-	toolExecutor    toolruntime.Executor
-	sessionStore    SessionStore
-	runStore        RunStore
-	todoStore       TodoStore
-	planStore       PlanStore
-	eventStore      EventStore
-	teamStore       TeamStore
-	subagentStore   SubagentStore
-	mcpRegistry     MCPRegistry
-	pluginStore     PluginStore
-	skillEngine     SkillEngine
-	costTracker     CostTracker
-	evaluator       *eval.Evaluator
-	schedulerStatus StatusProvider
-	probeStatus     StatusProvider
-	adminToken      string
-	runLogger       runlog.Logger
-	idCounter       uint64
+	orchestrator       orchestrator.Service
+	policy             policy.Engine
+	modelMapper        modelmap.Mapper
+	settings           *settings.Store
+	toolCatalog        ToolCatalogStore
+	toolExecutor       toolruntime.Executor
+	sessionStore       SessionStore
+	runStore           RunStore
+	todoStore          TodoStore
+	planStore          PlanStore
+	eventStore         EventStore
+	teamStore          TeamStore
+	subagentStore      SubagentStore
+	mcpRegistry        MCPRegistry
+	pluginStore        PluginStore
+	marketplaceService MarketplaceService
+	skillEngine        SkillEngine
+	costTracker        CostTracker
+	evaluator          *eval.Evaluator
+	schedulerStatus    StatusProvider
+	probeStatus        StatusProvider
+	adminToken         string
+	runLogger          runlog.Logger
+	memoryStore        memory.MemoryStore
+	summarizer         memory.Summarizer
+	authService        auth.Service
+	tokenService       token.Service
+	channelStore       ChannelStore
+	idCounter          uint64
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -184,69 +217,92 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 
 	s := &server{
-		orchestrator:    deps.Orchestrator,
-		policy:          deps.Policy,
-		modelMapper:     deps.ModelMapper,
-		settings:        deps.Settings,
-		toolCatalog:     deps.ToolCatalog,
-		toolExecutor:    deps.ToolExecutor,
-		sessionStore:    deps.SessionStore,
-		runStore:        deps.RunStore,
-		todoStore:       deps.TodoStore,
-		planStore:       deps.PlanStore,
-		eventStore:      deps.EventStore,
-		teamStore:       deps.TeamStore,
-		subagentStore:   deps.SubagentStore,
-		mcpRegistry:     deps.MCPRegistry,
-		pluginStore:     deps.PluginStore,
-		skillEngine:     deps.SkillEngine,
-		costTracker:     deps.CostTracker,
-		evaluator:       deps.Evaluator,
-		schedulerStatus: deps.SchedulerStatus,
-		probeStatus:     deps.ProbeStatus,
-		adminToken:      strings.TrimSpace(deps.AdminToken),
-		runLogger:       deps.RunLogger,
+		orchestrator:       deps.Orchestrator,
+		policy:             deps.Policy,
+		modelMapper:        deps.ModelMapper,
+		settings:           deps.Settings,
+		toolCatalog:        deps.ToolCatalog,
+		toolExecutor:       deps.ToolExecutor,
+		sessionStore:       deps.SessionStore,
+		runStore:           deps.RunStore,
+		todoStore:          deps.TodoStore,
+		planStore:          deps.PlanStore,
+		eventStore:         deps.EventStore,
+		teamStore:          deps.TeamStore,
+		subagentStore:      deps.SubagentStore,
+		mcpRegistry:        deps.MCPRegistry,
+		pluginStore:        deps.PluginStore,
+		marketplaceService: deps.MarketplaceService,
+		skillEngine:        deps.SkillEngine,
+		costTracker:        deps.CostTracker,
+		evaluator:          deps.Evaluator,
+		schedulerStatus:    deps.SchedulerStatus,
+		probeStatus:        deps.ProbeStatus,
+		adminToken:         strings.TrimSpace(deps.AdminToken),
+		runLogger:          deps.RunLogger,
+		memoryStore:        deps.MemoryStore,
+		summarizer:         deps.Summarizer,
+		authService:        deps.AuthService,
+		tokenService:       deps.TokenService,
+		channelStore:       deps.ChannelStore,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRootHome)
+	mux.HandleFunc("/home", s.handleRootHome)
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/v1/messages", s.handleMessages)
-	mux.HandleFunc("/v1/messages/count_tokens", s.handleCountTokens)
-	mux.HandleFunc("/v1/chat/completions", s.handleOpenAIChatCompletions)
-	mux.HandleFunc("/v1/responses", s.handleOpenAIResponses)
-	mux.HandleFunc("/v1/cc/sessions", s.handleCCSessions)
-	mux.HandleFunc("/v1/cc/sessions/", s.handleCCSessionByPath)
-	mux.HandleFunc("/v1/cc/runs", s.handleCCRuns)
-	mux.HandleFunc("/v1/cc/runs/", s.handleCCRunByPath)
-	mux.HandleFunc("/v1/cc/todos", s.handleCCTodos)
-	mux.HandleFunc("/v1/cc/todos/", s.handleCCTodoByPath)
-	mux.HandleFunc("/v1/cc/plans", s.handleCCPlans)
-	mux.HandleFunc("/v1/cc/plans/", s.handleCCPlanByPath)
-	mux.HandleFunc("/v1/cc/events", s.handleCCEvents)
-	mux.HandleFunc("/v1/cc/events/stream", s.handleCCEventsStream)
-	mux.HandleFunc("/v1/cc/teams", s.handleCCTeams)
-	mux.HandleFunc("/v1/cc/teams/", s.handleCCTeamByPath)
-	mux.HandleFunc("/v1/cc/subagents", s.handleCCSubagents)
-	mux.HandleFunc("/v1/cc/subagents/", s.handleCCSubagentByPath)
-	mux.HandleFunc("/v1/cc/mcp/servers", s.handleCCMCPServers)
-	mux.HandleFunc("/v1/cc/mcp/servers/", s.handleCCMCPServerByPath)
-	mux.HandleFunc("/v1/cc/plugins", s.handleCCPlugins)
-	mux.HandleFunc("/v1/cc/plugins/", s.handleCCPluginByPath)
+	// Messages API - Authenticated & Quota Managed
+	mux.HandleFunc("/v1/messages", s.withAuth(s.withTokenQuota(s.handleMessages)))
+	mux.HandleFunc("/v1/messages/count_tokens", s.withAuth(s.handleCountTokens))
+	mux.HandleFunc("/v1/chat/completions", s.withAuth(s.withTokenQuota(s.handleOpenAIChatCompletions)))
+	mux.HandleFunc("/v1/responses", s.withAuth(s.withTokenQuota(s.handleOpenAIResponses)))
+
+	// CC System API - Authenticated
+	// Sessions
+	mux.HandleFunc("/v1/cc/sessions", s.withAuth(s.handleCCSessions))
+	mux.HandleFunc("/v1/cc/sessions/", s.withAuth(s.handleCCSessionByPath))
+	mux.HandleFunc("/v1/cc/runs", s.withAuth(s.handleCCRuns))
+	mux.HandleFunc("/v1/cc/runs/", s.withAuth(s.handleCCRunByPath))
+	mux.HandleFunc("/v1/cc/todos", s.withAuth(s.handleCCTodos))
+	mux.HandleFunc("/v1/cc/todos/", s.withAuth(s.handleCCTodoByPath))
+	mux.HandleFunc("/v1/cc/plans", s.withAuth(s.handleCCPlans))
+	mux.HandleFunc("/v1/cc/plans/", s.withAuth(s.handleCCPlanByPath))
+	mux.HandleFunc("/v1/cc/events", s.withAuth(s.handleCCEvents))
+	mux.HandleFunc("/v1/cc/events/stream", s.withAuth(s.handleCCEventsStream))
+	mux.HandleFunc("/v1/cc/teams", s.withAuth(s.handleCCTeams))
+	mux.HandleFunc("/v1/cc/teams/", s.withAuth(s.handleCCTeamByPath))
+	mux.HandleFunc("/v1/cc/subagents", s.withAuth(s.handleCCSubagents))
+	mux.HandleFunc("/v1/cc/subagents/", s.withAuth(s.handleCCSubagentByPath))
+	mux.HandleFunc("/v1/cc/mcp/servers", s.withAuth(s.handleCCMCPServers))
+	mux.HandleFunc("/v1/cc/mcp/servers/", s.withAuth(s.handleCCMCPServerByPath))
+	mux.HandleFunc("/v1/cc/plugins", s.withAuth(s.handleCCPlugins))
+	mux.HandleFunc("/v1/cc/plugins/", s.withAuth(s.handleCCPluginByPath))
+	mux.HandleFunc("/v1/cc/marketplace/", s.withAuth(s.handleCCMarketplaceByPath))
 	mux.HandleFunc("/admin/settings", s.handleAdminSettings)
 	mux.HandleFunc("/admin/model-mapping", s.handleAdminModelMapping)
 	mux.HandleFunc("/admin/upstream", s.handleAdminUpstream)
-	mux.HandleFunc("/v1/cc/skills", s.handleCCSkills)
-	mux.HandleFunc("/v1/cc/skills/", s.handleCCSkillByPath)
+	mux.HandleFunc("/admin/capabilities", s.handleAdminCapabilities)
+	mux.HandleFunc("/v1/cc/skills", s.withAuth(s.handleCCSkills))
+	mux.HandleFunc("/v1/cc/skills/", s.withAuth(s.handleCCSkillByPath))
+	mux.HandleFunc("/admin/tools/gaps", s.handleAdminToolGaps)
 	mux.HandleFunc("/admin/tools", s.handleAdminTools)
 	mux.HandleFunc("/admin/scheduler", s.handleAdminScheduler)
+	mux.HandleFunc("/admin/intelligent-dispatch", s.handleAdminIntelligentDispatch)
 	mux.HandleFunc("/admin/probe", s.handleAdminProbe)
+	mux.HandleFunc("/admin/bootstrap/apply", s.handleAdminBootstrapApply)
+	mux.HandleFunc("/admin/marketplace/cloud/list", s.handleAdminMarketplaceCloudList)
+	mux.HandleFunc("/admin/marketplace/cloud/install", s.handleAdminMarketplaceCloudInstall)
 	mux.HandleFunc("/admin/auth/status", s.handleAdminAuthStatus)
+	mux.HandleFunc("/admin/auth/users", s.handleAdminUsers)         // List/Create users
+	mux.HandleFunc("/admin/auth/users/", s.handleAdminUserByPath)   // Get/Update/Delete user, Manage tokens
+	mux.HandleFunc("/admin/auth/tokens/", s.handleAdminTokenByPath) // Individual token operations
+	mux.HandleFunc("/admin/channels", s.handleAdminChannels)        // List/Create channels
+	mux.HandleFunc("/admin/channels/", s.handleAdminChannelByPath)  // Channel CRUD operations
 	mux.HandleFunc("/admin/cost", s.handleAdminCost)
 	mux.HandleFunc("/admin/status", s.handleAdminStatus)
 	mux.HandleFunc("/admin/", s.handleAdminDashboard)
-	mux.HandleFunc("/v1/cc/eval", s.handleCCEval)
-	return withCommonHeaders(mux)
+	mux.HandleFunc("/v1/cc/eval", s.withAuth(s.handleCCEval))
+	return withCommonHeaders(withProjectContext(mux))
 }
 
 func withCommonHeaders(next http.Handler) http.Handler {

@@ -2,8 +2,6 @@ package gateway
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -22,7 +20,8 @@ func (s *server) handleCCPlans(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var req plan.CreateInput
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
 			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}
@@ -117,7 +116,8 @@ func (s *server) handleCCPlanByPath(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleCCPlanApprove(w http.ResponseWriter, r *http.Request, planID string) {
 	var req plan.ApproveInput
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeJSONBodyStrict(r, &req, true); err != nil {
+		s.reportRequestDecodeIssue(r, err)
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 		return
 	}
@@ -142,7 +142,8 @@ func (s *server) handleCCPlanApprove(w http.ResponseWriter, r *http.Request, pla
 
 func (s *server) handleCCPlanExecute(w http.ResponseWriter, r *http.Request, planID string) {
 	var req plan.ExecuteInput
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeJSONBodyStrict(r, &req, true); err != nil {
+		s.reportRequestDecodeIssue(r, err)
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 		return
 	}

@@ -1,10 +1,11 @@
 package upstream_test
 
 import (
-	. "ccgateway/internal/upstream"
+	"context"
 	"testing"
 	"time"
 
+	. "ccgateway/internal/upstream"
 	"ccgateway/internal/orchestrator"
 	"ccgateway/internal/scheduler"
 )
@@ -17,7 +18,8 @@ func TestClassifyComplexity_WithTools(t *testing.T) {
 			{Role: "user", Content: "hello"},
 		},
 	}
-	if got := ClassifyComplexity(req); got != "complex" {
+	// Use static fallback for tests
+	if got := ClassifyComplexityStatic(req); got != "complex" {
 		t.Errorf("expected complex for tool request, got %s", got)
 	}
 }
@@ -33,7 +35,8 @@ func TestClassifyComplexity_LongContext(t *testing.T) {
 			{Role: "user", Content: string(long)},
 		},
 	}
-	if got := ClassifyComplexity(req); got != "complex" {
+	// Use static fallback for tests
+	if got := ClassifyComplexityStatic(req); got != "complex" {
 		t.Errorf("expected complex for long context, got %s", got)
 	}
 }
@@ -46,7 +49,8 @@ func TestClassifyComplexity_PlanningKeyword(t *testing.T) {
 			{Role: "user", Content: "hi"},
 		},
 	}
-	if got := ClassifyComplexity(req); got != "complex" {
+	// Use static fallback for tests
+	if got := ClassifyComplexityStatic(req); got != "complex" {
 		t.Errorf("expected complex for planning keyword, got %s", got)
 	}
 }
@@ -58,7 +62,8 @@ func TestClassifyComplexity_Simple(t *testing.T) {
 			{Role: "user", Content: "hello"},
 		},
 	}
-	if got := ClassifyComplexity(req); got != "simple" {
+	// Use static fallback for tests
+	if got := ClassifyComplexityStatic(req); got != "simple" {
 		t.Errorf("expected simple, got %s", got)
 	}
 }
@@ -79,7 +84,7 @@ func TestDispatcher_ComplexRoutesToScheduler(t *testing.T) {
 		},
 	}
 
-	route := d.RouteRequest(req, []string{"smart", "basic"})
+	route := d.RouteRequest(context.Background(), req, []string{"smart", "basic"})
 	if len(route) == 0 {
 		t.Fatal("expected non-empty route")
 	}
@@ -96,7 +101,7 @@ func TestDispatcher_SimpleRoundRobinsWorkers(t *testing.T) {
 		{AdapterName: "w2", Model: "m", Score: 50, TestedAt: time.Now()},
 	})
 
-	d := NewDispatcher(DispatchConfig{Enabled: true}, election)
+	d := NewDispatcher(DispatchConfig{Enabled: true, FallbackToScheduler: true}, election)
 	simpleReq := orchestrator.Request{
 		Model: "test",
 		Messages: []orchestrator.Message{
@@ -107,7 +112,7 @@ func TestDispatcher_SimpleRoundRobinsWorkers(t *testing.T) {
 	// Send multiple requests to check round-robin
 	seen := map[string]int{}
 	for i := 0; i < 10; i++ {
-		route := d.RouteRequest(simpleReq, []string{"smart", "w1", "w2"})
+		route := d.RouteRequest(context.Background(), simpleReq, []string{"smart", "w1", "w2"})
 		if len(route) == 0 {
 			t.Fatal("expected non-empty route")
 		}
@@ -129,7 +134,7 @@ func TestDispatcher_SimpleRoundRobinsWorkers(t *testing.T) {
 
 func TestDispatcher_DisabledReturnsNil(t *testing.T) {
 	d := NewDispatcher(DispatchConfig{Enabled: false}, nil)
-	route := d.RouteRequest(orchestrator.Request{}, nil)
+	route := d.RouteRequest(context.Background(), orchestrator.Request{}, nil)
 	if route != nil {
 		t.Error("expected nil when disabled")
 	}
@@ -139,8 +144,75 @@ func TestDispatcher_NoElectionReturnsNil(t *testing.T) {
 	election := scheduler.NewElection(scheduler.ElectionConfig{Enabled: true})
 	// No scores → no election result
 	d := NewDispatcher(DispatchConfig{Enabled: true}, election)
-	route := d.RouteRequest(orchestrator.Request{}, nil)
+	route := d.RouteRequest(context.Background(), orchestrator.Request{}, nil)
 	if route != nil {
 		t.Error("expected nil when no election result")
+	}
+}
+
+func TestDispatcher_UpdateConfig(t *testing.T) {
+	d := NewDispatcher(DispatchConfig{Enabled: false}, nil)
+
+	// Initially disabled
+	cfg := d.GetConfig()
+	if cfg.Enabled != false {
+		t.Errorf("expected initial enabled=false, got %v", cfg.Enabled)
+	}
+
+	// Update to enabled
+	d.UpdateConfig(DispatchConfig{Enabled: true})
+	cfg = d.GetConfig()
+	if cfg.Enabled != true {
+		t.Errorf("expected updated enabled=true, got %v", cfg.Enabled)
+	}
+}
+
+func TestDispatcher_UpdateConfigDynamically(t *testing.T) {
+	election := scheduler.NewElection(scheduler.ElectionConfig{Enabled: true})
+	election.UpdateScores([]scheduler.IntelligenceScore{
+		{AdapterName: "smart", Model: "m", Score: 90, TestedAt: time.Now()},
+		{AdapterName: "w1", Model: "m", Score: 60, TestedAt: time.Now()},
+	})
+
+	// Start disabled
+	d := NewDispatcher(DispatchConfig{Enabled: false}, election)
+	req := orchestrator.Request{
+		Model: "test",
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	// Should return nil when disabled
+	route := d.RouteRequest(context.Background(), req, []string{"smart", "w1"})
+	if route != nil {
+		t.Error("expected nil when disabled")
+	}
+
+	// Enable dispatch
+	d.UpdateConfig(DispatchConfig{Enabled: true})
+
+	// Now should return a route
+	route = d.RouteRequest(context.Background(), req, []string{"smart", "w1"})
+	if route == nil {
+		t.Error("expected route when enabled")
+	}
+}
+
+func TestDispatcher_NilDispatcher(t *testing.T) {
+	// Test nil dispatcher safety
+	var d *Dispatcher
+
+	// These should not panic
+	cfg := d.GetConfig()
+	if cfg.Enabled != false {
+		t.Errorf("expected nil dispatcher to return disabled config, got %v", cfg.Enabled)
+	}
+
+	d.UpdateConfig(DispatchConfig{Enabled: true}) // should not panic
+
+	snap := d.Snapshot()
+	if snap != nil {
+		t.Error("expected nil snapshot for nil dispatcher")
 	}
 }

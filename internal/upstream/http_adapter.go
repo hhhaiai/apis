@@ -5,13 +5,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"ccgateway/internal/orchestrator"
 )
@@ -36,24 +39,28 @@ type HTTPAdapterConfig struct {
 	Model              string            `json:"model,omitempty"`
 	UserAgent          string            `json:"user_agent,omitempty"`
 	APIKeyHeader       string            `json:"api_key_header,omitempty"`
+	SupportsVision     *bool             `json:"supports_vision,omitempty"`
+	SupportsTools      *bool             `json:"supports_tools,omitempty"`
 	ForceStream        bool              `json:"force_stream,omitempty"`
 	StreamOptions      map[string]any    `json:"stream_options,omitempty"`
 	InsecureSkipVerify bool              `json:"insecure_skip_verify,omitempty"`
 }
 
 type HTTPAdapter struct {
-	name          string
-	kind          AdapterKind
-	baseURL       string
-	endpoint      string
-	apiKey        string
-	headers       map[string]string
-	model         string
-	userAgent     string
-	apiKeyHeader  string
-	forceStream   bool
-	streamOptions map[string]any
-	client        *http.Client
+	name           string
+	kind           AdapterKind
+	baseURL        string
+	endpoint       string
+	apiKey         string
+	headers        map[string]string
+	model          string
+	userAgent      string
+	apiKeyHeader   string
+	supportsVision *bool
+	supportsTools  *bool
+	forceStream    bool
+	streamOptions  map[string]any
+	client         *http.Client
 }
 
 func NewHTTPAdapter(cfg HTTPAdapterConfig, client *http.Client) (*HTTPAdapter, error) {
@@ -99,18 +106,20 @@ func NewHTTPAdapter(cfg HTTPAdapterConfig, client *http.Client) (*HTTPAdapter, e
 	}
 
 	return &HTTPAdapter{
-		name:          cfg.Name,
-		kind:          cfg.Kind,
-		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
-		endpoint:      ep,
-		apiKey:        cfg.APIKey,
-		headers:       copyHeaders(cfg.Headers),
-		model:         strings.TrimSpace(cfg.Model),
-		userAgent:     strings.TrimSpace(cfg.UserAgent),
-		apiKeyHeader:  strings.TrimSpace(cfg.APIKeyHeader),
-		forceStream:   cfg.ForceStream,
-		streamOptions: copyAnyMap(cfg.StreamOptions),
-		client:        client,
+		name:           cfg.Name,
+		kind:           cfg.Kind,
+		baseURL:        strings.TrimRight(cfg.BaseURL, "/"),
+		endpoint:       ep,
+		apiKey:         cfg.APIKey,
+		headers:        copyHeaders(cfg.Headers),
+		model:          strings.TrimSpace(cfg.Model),
+		userAgent:      strings.TrimSpace(cfg.UserAgent),
+		apiKeyHeader:   strings.TrimSpace(cfg.APIKeyHeader),
+		supportsVision: cloneBoolPtr(cfg.SupportsVision),
+		supportsTools:  cloneBoolPtr(cfg.SupportsTools),
+		forceStream:    cfg.ForceStream,
+		streamOptions:  copyAnyMap(cfg.StreamOptions),
+		client:         client,
 	}, nil
 }
 
@@ -133,6 +142,8 @@ func (a *HTTPAdapter) AdminSpec() AdapterSpec {
 		Model:              a.model,
 		UserAgent:          a.userAgent,
 		APIKeyHeader:       a.apiKeyHeader,
+		SupportsVision:     cloneBoolPtr(a.supportsVision),
+		SupportsTools:      cloneBoolPtr(a.supportsTools),
 		ForceStream:        a.forceStream,
 		StreamOptions:      copyAnyMap(a.streamOptions),
 		InsecureSkipVerify: false,
@@ -204,6 +215,9 @@ func (a *HTTPAdapter) completeOpenAI(ctx context.Context, req orchestrator.Reque
 	}
 	if len(req.Tools) > 0 {
 		payload["tools"] = canonicalToOpenAITools(req.Tools)
+		if toolChoice, ok := toOpenAIToolChoice(req.Metadata["tool_choice"]); ok {
+			payload["tool_choice"] = toolChoice
+		}
 	}
 	if v, ok := req.Metadata["temperature"]; ok {
 		payload["temperature"] = v
@@ -273,6 +287,9 @@ func (a *HTTPAdapter) completeAnthropic(ctx context.Context, req orchestrator.Re
 	}
 	if len(req.Tools) > 0 {
 		payload["tools"] = canonicalToAnthropicTools(req.Tools)
+		if toolChoice, ok := toAnthropicToolChoice(req.Metadata["tool_choice"]); ok {
+			payload["tool_choice"] = toolChoice
+		}
 	}
 	if v, ok := req.Metadata["temperature"]; ok {
 		payload["temperature"] = v
@@ -489,6 +506,9 @@ func (a *HTTPAdapter) streamAnthropic(ctx context.Context, req orchestrator.Requ
 	}
 	if len(req.Tools) > 0 {
 		payload["tools"] = canonicalToAnthropicTools(req.Tools)
+		if toolChoice, ok := toAnthropicToolChoice(req.Metadata["tool_choice"]); ok {
+			payload["tool_choice"] = toolChoice
+		}
 	}
 	if v, ok := req.Metadata["temperature"]; ok {
 		payload["temperature"] = v
@@ -557,6 +577,9 @@ func (a *HTTPAdapter) streamOpenAI(ctx context.Context, req orchestrator.Request
 	}
 	if len(req.Tools) > 0 {
 		payload["tools"] = canonicalToOpenAITools(req.Tools)
+		if toolChoice, ok := toOpenAIToolChoice(req.Metadata["tool_choice"]); ok {
+			payload["tool_choice"] = toolChoice
+		}
 	}
 	if v, ok := req.Metadata["temperature"]; ok {
 		payload["temperature"] = v
@@ -1322,6 +1345,146 @@ func normalizeGeminiStopReason(finish string, hasToolCalls bool) string {
 	}
 }
 
+func toOpenAIToolChoice(raw any) (any, bool) {
+	switch v := raw.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "auto":
+			return "auto", true
+		case "none":
+			return "none", true
+		case "required", "any":
+			return "required", true
+		default:
+			return nil, false
+		}
+	case map[string]any:
+		choiceType, _ := v["type"].(string)
+		switch strings.ToLower(strings.TrimSpace(choiceType)) {
+		case "auto":
+			return "auto", true
+		case "none":
+			return "none", true
+		case "required", "any":
+			return "required", true
+		case "tool":
+			name, _ := v["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return nil, false
+			}
+			return map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": name,
+				},
+			}, true
+		case "function":
+			function, ok := v["function"].(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			name, _ := function["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return nil, false
+			}
+			return map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": name,
+				},
+			}, true
+		default:
+			// OpenAI style function object without explicit "type".
+			function, ok := v["function"].(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			name, _ := function["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return nil, false
+			}
+			return map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": name,
+				},
+			}, true
+		}
+	default:
+		return nil, false
+	}
+}
+
+func toAnthropicToolChoice(raw any) (any, bool) {
+	switch v := raw.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "auto":
+			return map[string]any{"type": "auto"}, true
+		case "any", "required":
+			return map[string]any{"type": "any"}, true
+		case "none":
+			return map[string]any{"type": "none"}, true
+		default:
+			return nil, false
+		}
+	case map[string]any:
+		choiceType, _ := v["type"].(string)
+		switch strings.ToLower(strings.TrimSpace(choiceType)) {
+		case "auto":
+			return map[string]any{"type": "auto"}, true
+		case "any", "required":
+			return map[string]any{"type": "any"}, true
+		case "none":
+			return map[string]any{"type": "none"}, true
+		case "tool":
+			name, _ := v["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return map[string]any{"type": "tool"}, true
+			}
+			return map[string]any{
+				"type": "tool",
+				"name": name,
+			}, true
+		case "function":
+			function, ok := v["function"].(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			name, _ := function["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return nil, false
+			}
+			return map[string]any{
+				"type": "tool",
+				"name": name,
+			}, true
+		default:
+			// OpenAI style function object without explicit "type".
+			function, ok := v["function"].(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			name, _ := function["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return nil, false
+			}
+			return map[string]any{
+				"type": "tool",
+				"name": name,
+			}, true
+		}
+	default:
+		return nil, false
+	}
+}
+
 func canonicalToOpenAITools(tools []orchestrator.Tool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
@@ -1480,7 +1643,7 @@ func canonicalToAnthropicMessages(messages []orchestrator.Message) []map[string]
 		case []any:
 			out = append(out, map[string]any{
 				"role":    m.Role,
-				"content": c,
+				"content": normalizeAnthropicContent(c),
 			})
 		default:
 			out = append(out, map[string]any{
@@ -1495,6 +1658,170 @@ func canonicalToAnthropicMessages(messages []orchestrator.Message) []map[string]
 		}
 	}
 	return out
+}
+
+func normalizeAnthropicContent(content []any) []any {
+	out := make([]any, 0, len(content))
+	for _, item := range content {
+		block, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		blockType, _ := block["type"].(string)
+		if strings.EqualFold(strings.TrimSpace(blockType), "image_url") {
+			if imageBlock, ok := openAIImageURLBlockToAnthropic(block); ok {
+				out = append(out, imageBlock)
+				continue
+			}
+		}
+		out = append(out, block)
+	}
+	return out
+}
+
+func openAIImageURLBlockToAnthropic(block map[string]any) (map[string]any, bool) {
+	rawImageURL, ok := block["image_url"]
+	if !ok {
+		return nil, false
+	}
+	imageURL, ok := extractImageURL(rawImageURL)
+	if !ok {
+		return nil, false
+	}
+	mediaType, data, ok := resolveImageURLToBase64(imageURL)
+	if !ok {
+		return nil, false
+	}
+	return map[string]any{
+		"type": "image",
+		"source": map[string]any{
+			"type":       "base64",
+			"media_type": mediaType,
+			"data":       data,
+		},
+	}, true
+}
+
+func extractImageURL(raw any) (string, bool) {
+	switch v := raw.(type) {
+	case string:
+		urlStr := strings.TrimSpace(v)
+		return urlStr, urlStr != ""
+	case map[string]any:
+		urlStr, _ := v["url"].(string)
+		urlStr = strings.TrimSpace(urlStr)
+		return urlStr, urlStr != ""
+	default:
+		return "", false
+	}
+}
+
+func resolveImageURLToBase64(imageURL string) (string, string, bool) {
+	imageURL = strings.TrimSpace(imageURL)
+	if imageURL == "" {
+		return "", "", false
+	}
+	if strings.HasPrefix(imageURL, "data:") {
+		return parseDataURL(imageURL)
+	}
+	if strings.HasPrefix(imageURL, "http://") || strings.HasPrefix(imageURL, "https://") {
+		mediaType, data, err := fetchImageURLAsBase64(imageURL)
+		if err != nil {
+			return "", "", false
+		}
+		return mediaType, data, true
+	}
+	return "", "", false
+}
+
+func parseDataURL(raw string) (string, string, bool) {
+	if !strings.HasPrefix(raw, "data:") {
+		return "", "", false
+	}
+	payload := raw[len("data:"):]
+	commaIdx := strings.Index(payload, ",")
+	if commaIdx <= 0 {
+		return "", "", false
+	}
+	meta := payload[:commaIdx]
+	data := payload[commaIdx+1:]
+	if !strings.Contains(meta, ";base64") {
+		return "", "", false
+	}
+	mediaType := strings.TrimSpace(strings.TrimSuffix(meta, ";base64"))
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+		return "", "", false
+	}
+	return mediaType, data, true
+}
+
+func fetchImageURLAsBase64(imageURL string) (string, string, error) {
+	parsedURL, err := url.Parse(imageURL)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid image url: %w", err)
+	}
+	host := strings.TrimSpace(parsedURL.Hostname())
+	if host == "" {
+		return "", "", fmt.Errorf("missing image host")
+	}
+	if isBlockedImageHost(host) {
+		return "", "", fmt.Errorf("blocked image host")
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(imageURL)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("image download status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return "", "", err
+	}
+	if len(body) == 0 {
+		return "", "", fmt.Errorf("empty image body")
+	}
+	mediaType := strings.TrimSpace(resp.Header.Get("content-type"))
+	if idx := strings.Index(mediaType, ";"); idx >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:idx])
+	}
+	if mediaType == "" {
+		mediaType = http.DetectContentType(body)
+	}
+	return mediaType, base64.StdEncoding.EncodeToString(body), nil
+}
+
+func isBlockedImageHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return true
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isPrivateOrReservedIP(ip)
+	}
+	return false
+}
+
+func isPrivateOrReservedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified()
 }
 
 func canonicalToGeminiContents(messages []orchestrator.Message) []map[string]any {

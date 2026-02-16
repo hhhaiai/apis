@@ -127,3 +127,34 @@ func TestCCRunsNotConfigured(t *testing.T) {
 		t.Fatalf("expected 501, got %d; body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCCRunsRequireAuthWhenAdminTokenConfigured(t *testing.T) {
+	runStore := ccrun.NewStore()
+	_, _ = runStore.Create(ccrun.CreateInput{
+		ID:   "run_sec",
+		Path: "/v1/messages",
+	})
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		RunStore:     runStore,
+		AdminToken:   "secret-admin",
+	})
+
+	reqNoAuth := httptest.NewRequest(http.MethodGet, "/v1/cc/runs", nil)
+	rrNoAuth := httptest.NewRecorder()
+	router.ServeHTTP(rrNoAuth, reqNoAuth)
+	if rrNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without auth, got %d; body=%s", rrNoAuth.Code, rrNoAuth.Body.String())
+	}
+
+	reqAuth := httptest.NewRequest(http.MethodGet, "/v1/cc/runs", nil)
+	reqAuth.Header.Set("authorization", "Bearer secret-admin")
+	rrAuth := httptest.NewRecorder()
+	router.ServeHTTP(rrAuth, reqAuth)
+	if rrAuth.Code != http.StatusOK {
+		t.Fatalf("expected 200 with auth, got %d; body=%s", rrAuth.Code, rrAuth.Body.String())
+	}
+}

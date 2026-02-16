@@ -1,0 +1,33 @@
+{
+  "name": "search-tools",
+  "version": "1.0.0",
+  "description": "Web search and information retrieval tools. Provides web_search, image_search, and image_recognition capabilities for AI agents to access real-time information from the internet.",
+  "author": "CC Gateway Team",
+  "tags": ["tools", "search", "web", "information"],
+  "source": "builtin.ccgateway",
+  "verified": true,
+  "license": "AGPL-3.0-or-later",
+  "dependencies": [],
+  "skills": [
+    {
+      "name": "web-search",
+      "description": "Search the web for information",
+      "template": "Use web_search tool to find information about: {{query}}"
+    },
+    {
+      "name": "image-search",
+      "description": "Search for images on the web",
+      "template": "Use image_search tool to find images of: {{query}}"
+    }
+  ],
+  "hooks": [],
+  "mcp_servers": [],
+  "config_schema": {
+    "search_api_url": {
+      "type": "url",
+      "description": "Search API endpoint URL",
+      "required": false,
+      "default": "https://api.search.example.com"
+    }
+  }
+}

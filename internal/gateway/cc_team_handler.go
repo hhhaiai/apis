@@ -17,7 +17,8 @@ func (s *server) handleCCTeams(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var req agentteam.CreateInput
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
 			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}
@@ -122,7 +123,8 @@ func (s *server) handleCCTeamAgents(w http.ResponseWriter, r *http.Request, team
 	switch r.Method {
 	case http.MethodPost:
 		var req agentteam.Agent
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
 			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}
@@ -165,7 +167,8 @@ func (s *server) handleCCTeamTasks(w http.ResponseWriter, r *http.Request, teamI
 	switch r.Method {
 	case http.MethodPost:
 		var req agentteam.CreateTaskInput
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
 			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}
@@ -213,7 +216,8 @@ func (s *server) handleCCTeamMessages(w http.ResponseWriter, r *http.Request, te
 			To      string `json:"to"`
 			Content string `json:"content"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
 			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}

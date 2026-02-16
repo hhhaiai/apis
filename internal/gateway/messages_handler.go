@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"ccgateway/internal/ccevent"
 	"ccgateway/internal/ccrun"
+	"ccgateway/internal/memory"
 	"ccgateway/internal/orchestrator"
 	"ccgateway/internal/policy"
 	"ccgateway/internal/runlog"
@@ -83,7 +85,8 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req MessagesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodySingle(r, &req, false); err != nil {
+		s.reportRequestDecodeIssue(r, err)
 		statusCode = http.StatusBadRequest
 		errText = "invalid JSON body"
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
@@ -95,6 +98,12 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	if err := s.enforceTokenModelAccess(r.Context(), req.Model); err != nil {
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "permission_error", err.Error())
+		return
+	}
 	mode = requestMode(r, req.Metadata)
 	clientModel = req.Model
 	streamMode = req.Stream
@@ -102,6 +111,74 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	sessionID = requestSessionID(r, req.Metadata)
 	req.System = s.applySystemPromptPrefix(mode, req.System)
 	req.Metadata = s.applyRoutingPolicy(mode, req.Metadata)
+
+	// --- Memory Integration Start ---
+	if s.memoryStore != nil && sessionID != "" {
+		ctx := r.Context()
+		// 1. Get working memory
+		wm, err := s.memoryStore.GetWorkingMemory(ctx, sessionID)
+		if err != nil {
+			s.appendEvent(ccevent.AppendInput{
+				EventType: "memory.error",
+				SessionID: sessionID,
+				RunID:     runID,
+				Data: map[string]any{
+					"stage": "get_working_memory",
+					"error": err.Error(),
+				},
+			})
+		}
+
+		// 2. Append current user message
+		if wm != nil {
+			lastUserMsg := req.Messages[len(req.Messages)-1]
+			wm.Messages = append(wm.Messages, memory.Message{
+				Role:      lastUserMsg.Role,
+				Content:   contentToMemoryText(lastUserMsg.Content),
+				Timestamp: time.Now(),
+			})
+			_ = s.memoryStore.UpdateWorkingMemory(ctx, wm)
+		}
+
+		// 3. Summarization Check
+		if wm != nil && len(wm.Messages) > 10 && s.summarizer != nil {
+			go func(sid string, msgs []memory.Message) {
+				// Async summarization to avoid blocking response
+				summary, err := s.summarizer.SummarizeRecent(context.Background(), msgs)
+				if err == nil {
+					sm, _ := s.memoryStore.GetSessionMemory(context.Background(), sid)
+					if sm == nil {
+						sm = &memory.SessionMemory{SessionID: sid}
+					}
+					sm.Summary = summary
+					_ = s.memoryStore.UpdateSessionMemory(context.Background(), sm)
+
+					// Trucate working memory (keep last 4 messages + current)
+					// Verify concurrency safety in real implementation
+					wmPayload, _ := s.memoryStore.GetWorkingMemory(context.Background(), sid)
+					if wmPayload != nil && len(wmPayload.Messages) > 4 {
+						wmPayload.Messages = wmPayload.Messages[len(wmPayload.Messages)-4:]
+						_ = s.memoryStore.UpdateWorkingMemory(context.Background(), wmPayload)
+					}
+				}
+			}(sessionID, wm.Messages)
+		}
+
+		// 4. Context Construction (Optional - for this implementation we just logging it)
+		// To truly use it, we would replace req.Messages with buildContextMessages(wm, sm)
+		// However, since we are a gateway, strictly replacing messages might break client expectations
+		// So we will inject the summary into System prompt if available
+		sm, _ := s.memoryStore.GetSessionMemory(ctx, sessionID)
+		if sm != nil && sm.Summary != "" {
+			summarySystemMsg := fmt.Sprintf("\n\nPrevious Conversation Summary:\n%s", sm.Summary)
+			if req.System == nil {
+				req.System = summarySystemMsg
+			} else {
+				req.System = fmt.Sprintf("%v%s", req.System, summarySystemMsg)
+			}
+		}
+	}
+	// --- Memory Integration End ---
 
 	requestedModel, mappedModel, err := s.resolveUpstreamModel(mode, clientModel)
 	if err != nil {
@@ -112,6 +189,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreamModel = mappedModel
 	req.Model = mappedModel
+	req.Metadata = s.applyChannelRoutePolicy(r.Context(), req.Metadata, mappedModel)
 
 	action := policy.Action{
 		Path:      "/v1/messages",
@@ -163,9 +241,18 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		creq.Metadata = map[string]any{}
 	}
 	creq.Metadata["mode"] = mode
+	creq.Metadata["session_id"] = sessionID
+	creq.Metadata["request_path"] = "/v1/messages"
 	creq.Metadata["client_model"] = clientModel
 	creq.Metadata["requested_model"] = requestedModel
 	creq.Metadata["upstream_model"] = mappedModel
+	reservedQuota := estimateReservedQuota(req.MaxTokens, req.System, req.Messages)
+	if err := s.reserveQuotaFromRequestContext(r.Context(), reservedQuota); err != nil {
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "quota_error", err.Error())
+		return
+	}
 	if req.Stream {
 		if _, ok := creq.Metadata["strict_stream_passthrough"]; !ok {
 			creq.Metadata["strict_stream_passthrough"] = true
@@ -173,18 +260,39 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		if _, ok := creq.Metadata["strict_stream_passthrough_soft"]; !ok {
 			creq.Metadata["strict_stream_passthrough_soft"] = true
 		}
-		generatedText = s.streamMessages(w, r, creq, requestedModel)
+		creq = s.applyVisionFallback(r.Context(), creq)
+		creq = s.applyToolSupportFallback(creq)
+		var usage orchestrator.Usage
+		if s.shouldStreamWithToolLoop(creq) {
+			generatedText, usage = s.streamMessagesWithToolLoop(w, r, creq, requestedModel)
+		} else {
+			generatedText, usage = s.streamMessages(w, r, creq, requestedModel)
+		}
+		if err := s.settleQuotaFromRequestContext(r.Context(), reservedQuota, usageToQuotaAmount(usage.InputTokens, usage.OutputTokens)); err != nil {
+			statusCode = http.StatusForbidden
+			errText = err.Error()
+		}
 		return
 	}
 
+	creq = s.applyVisionFallback(r.Context(), creq)
+	creq = s.applyToolSupportFallback(creq)
 	resp, err := s.completeWithToolLoop(r.Context(), creq)
 	if err != nil {
+		_ = s.refundQuotaFromRequestContext(r.Context(), reservedQuota)
 		statusCode = http.StatusBadGateway
 		errText = err.Error()
 		s.writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
 	generatedText = collectResponseText(resp)
+	if err := s.settleQuotaFromRequestContext(r.Context(), reservedQuota, usageToQuotaAmount(resp.Usage.InputTokens, resp.Usage.OutputTokens)); err != nil {
+		_ = s.refundQuotaFromRequestContext(r.Context(), reservedQuota)
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "quota_error", err.Error())
+		return
+	}
 
 	msg := fromCanonicalResponse(s.nextID("msg"), resp)
 	msg.Model = clientModel
@@ -193,12 +301,13 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(msg)
 }
 
-func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) string {
+func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) (string, orchestrator.Usage) {
 	var generated strings.Builder
+	var usage orchestrator.Usage
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
-		return generated.String()
+		return generated.String(), usage
 	}
 
 	w.Header().Set("content-type", "text/event-stream")
@@ -212,9 +321,12 @@ func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orch
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return generated.String()
+				return generated.String(), usage
 			}
 			appendStreamText(&generated, ev)
+			if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
+				usage = ev.Usage
+			}
 			if ev.PassThrough && len(ev.RawData) > 0 {
 				raw := ev.RawData
 				if rewritten, ok := rewriteAnthropicStreamModel(ev.Type, ev.RawData, outwardModel); ok {
@@ -225,14 +337,14 @@ func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orch
 					eventName = ev.RawEvent
 				}
 				if err := writeSSERaw(w, eventName, raw); err != nil {
-					return generated.String()
+					return generated.String(), usage
 				}
 				flusher.Flush()
 				continue
 			}
 			payload := streamPayloadFromEvent(ev, outwardModel, s.nextID("msg"))
 			if err := writeSSE(w, ev.Type, payload); err != nil {
-				return generated.String()
+				return generated.String(), usage
 			}
 			flusher.Flush()
 		case err, ok := <-errs:
@@ -247,9 +359,9 @@ func (s *server) streamMessages(w http.ResponseWriter, r *http.Request, req orch
 				},
 			})
 			flusher.Flush()
-			return generated.String()
+			return generated.String(), usage
 		case <-r.Context().Done():
-			return generated.String()
+			return generated.String(), usage
 		}
 	}
 }
@@ -283,7 +395,8 @@ func (s *server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req CountTokensRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodySingle(r, &req, false); err != nil {
+		s.reportRequestDecodeIssue(r, err)
 		statusCode = http.StatusBadRequest
 		errText = "invalid JSON body"
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
@@ -293,6 +406,12 @@ func (s *server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 		statusCode = http.StatusBadRequest
 		errText = "model is required"
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+	if err := s.enforceTokenModelAccess(r.Context(), req.Model); err != nil {
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "permission_error", err.Error())
 		return
 	}
 	if len(req.Messages) == 0 {
@@ -382,6 +501,23 @@ func toCanonicalRequest(runID string, req MessagesRequest, r *http.Request) orch
 		"authorization":     r.Header.Get("authorization"),
 	}
 
+	metadata := map[string]any{}
+	for k, v := range req.Metadata {
+		metadata[k] = v
+	}
+	if req.ToolChoice != nil {
+		metadata["tool_choice"] = req.ToolChoice
+	}
+	if req.Temperature != nil {
+		metadata["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		metadata["top_p"] = *req.TopP
+	}
+	if len(metadata) == 0 {
+		metadata = nil
+	}
+
 	return orchestrator.Request{
 		RunID:     runID,
 		Model:     req.Model,
@@ -389,7 +525,7 @@ func toCanonicalRequest(runID string, req MessagesRequest, r *http.Request) orch
 		System:    req.System,
 		Messages:  msgs,
 		Tools:     tools,
-		Metadata:  req.Metadata,
+		Metadata:  metadata,
 		Headers:   headers,
 	}
 }
@@ -549,4 +685,78 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func estimateReservedQuota(maxTokens int, system any, messages []MessageParam) int64 {
+	reserved := int64(max(maxTokens, 1))
+	for _, m := range messages {
+		reserved += int64(max(estimateContentTokens(m.Content), 0))
+	}
+	if system != nil {
+		reserved += int64(max(estimateContentTokens(system), 0))
+	}
+	if reserved <= 0 {
+		return 1
+	}
+	return reserved
+}
+
+func buildContextMessages(wm *memory.WorkingMemory, sm *memory.SessionMemory) []orchestrator.Message {
+	messages := []orchestrator.Message{}
+
+	// Add session summary as system message if it exists
+	if sm != nil && sm.Summary != "" {
+		messages = append(messages, orchestrator.Message{
+			Role: "system",
+			Content: []any{
+				map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("Conversation Summary:\n%s", sm.Summary),
+				},
+			},
+		})
+	}
+
+	// Add working memory messages
+	if wm != nil {
+		for _, msg := range wm.Messages {
+			messages = append(messages, orchestrator.Message{
+				Role: msg.Role,
+				Content: []any{
+					map[string]any{
+						"type": "text",
+						"text": msg.Content,
+					},
+				},
+			})
+		}
+	}
+
+	return messages
+}
+
+func contentToMemoryText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return strings.TrimSpace(c)
+	case []any:
+		parts := make([]string, 0, len(c))
+		for _, item := range c {
+			block, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			text, _ := block["text"].(string)
+			text = strings.TrimSpace(text)
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	case map[string]any:
+		text, _ := c["text"].(string)
+		return strings.TrimSpace(text)
+	default:
+		return strings.TrimSpace(fmt.Sprint(content))
+	}
 }

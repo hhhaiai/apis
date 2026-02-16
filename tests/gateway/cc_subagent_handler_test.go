@@ -302,6 +302,79 @@ func TestCCSubagentDelete(t *testing.T) {
 	}
 }
 
+func TestCCSubagentTerminateAndDeleteAllowEmptyBody(t *testing.T) {
+	manager := subagent.NewManager(func(_ context.Context, _ subagent.Agent) (string, error) {
+		time.Sleep(120 * time.Millisecond)
+		return "done", nil
+	})
+	terminateTarget, err := manager.Spawn(context.Background(), subagent.SpawnConfig{
+		ParentID: "team_empty",
+		Model:    "model-x",
+		Task:     "task-terminate",
+	})
+	if err != nil {
+		t.Fatalf("spawn terminate target: %v", err)
+	}
+	deleteTarget, err := manager.Spawn(context.Background(), subagent.SpawnConfig{
+		ParentID: "team_empty",
+		Model:    "model-x",
+		Task:     "task-delete",
+	})
+	if err != nil {
+		t.Fatalf("spawn delete target: %v", err)
+	}
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator:  orchestrator.NewSimpleService(),
+		Policy:        policy.NewNoopEngine(),
+		ModelMapper:   modelmap.NewIdentityMapper(),
+		SubagentStore: manager,
+	})
+
+	terminateReq := httptest.NewRequest(http.MethodPost, "/v1/cc/subagents/"+terminateTarget.ID+"/terminate", nil)
+	terminateRR := httptest.NewRecorder()
+	router.ServeHTTP(terminateRR, terminateReq)
+	if terminateRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 terminate with empty body, got %d; body=%s", terminateRR.Code, terminateRR.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/cc/subagents/"+deleteTarget.ID, nil)
+	deleteRR := httptest.NewRecorder()
+	router.ServeHTTP(deleteRR, deleteReq)
+	if deleteRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 delete with empty body, got %d; body=%s", deleteRR.Code, deleteRR.Body.String())
+	}
+}
+
+func TestCCSubagentTerminateRejectTrailingJSON(t *testing.T) {
+	manager := subagent.NewManager(func(_ context.Context, _ subagent.Agent) (string, error) {
+		time.Sleep(120 * time.Millisecond)
+		return "done", nil
+	})
+	created, err := manager.Spawn(context.Background(), subagent.SpawnConfig{
+		ParentID: "team_bad_json",
+		Model:    "model-x",
+		Task:     "task",
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator:  orchestrator.NewSimpleService(),
+		Policy:        policy.NewNoopEngine(),
+		ModelMapper:   modelmap.NewIdentityMapper(),
+		SubagentStore: manager,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cc/subagents/"+created.ID+"/terminate", strings.NewReader(`{"by":"lead"} {}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing JSON, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestCCSubagentTimeline(t *testing.T) {
 	manager := subagent.NewManager(nil)
 	created, err := manager.Spawn(context.Background(), subagent.SpawnConfig{

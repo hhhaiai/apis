@@ -14,10 +14,11 @@ type OpenAIChatCompletionsRequest struct {
 }
 
 type OpenAIChatMessage struct {
-	Role       string `json:"role"`
-	Content    any    `json:"content"`
-	Name       string `json:"name,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
+	Role       string           `json:"role"`
+	Content    any              `json:"content"`
+	Name       string           `json:"name,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
 type OpenAIChatTool struct {
@@ -74,7 +75,11 @@ type OpenAIResponsesRequest struct {
 	Input           any              `json:"input"`
 	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
 	Stream          bool             `json:"stream,omitempty"`
+	StreamOptions   map[string]any   `json:"stream_options,omitempty"`
 	Tools           []OpenAIChatTool `json:"tools,omitempty"`
+	ToolChoice      any              `json:"tool_choice,omitempty"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	TopP            *float64         `json:"top_p,omitempty"`
 	Metadata        map[string]any   `json:"metadata,omitempty"`
 }
 

@@ -10,7 +10,24 @@ import (
 var homeHTML []byte
 
 func (s *server) handleRootHome(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	switch r.URL.Path {
+	case "/":
+		if r.Method != http.MethodGet {
+			s.writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		http.Redirect(w, r, "/admin/", http.StatusFound)
+		return
+	case "/admin":
+		if r.Method != http.MethodGet {
+			s.writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		http.Redirect(w, r, "/admin/", http.StatusFound)
+		return
+	case "/home":
+		// continue to render legacy landing page
+	default:
 		http.NotFound(w, r)
 		return
 	}

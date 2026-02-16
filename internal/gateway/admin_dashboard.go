@@ -106,6 +106,11 @@ func (s *server) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	if s.probeStatus != nil {
 		status["probe"] = s.probeStatus.Snapshot()
 	}
+	if snapshot, err := s.buildAdminCapabilitiesSnapshot(r.Context(), "chat", "", false); err == nil {
+		if overview, ok := snapshot["overview"]; ok {
+			status["capabilities_overview"] = overview
+		}
+	}
 	w.Header().Set("content-type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
 }

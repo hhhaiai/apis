@@ -18,7 +18,8 @@ func (s *server) handleCCSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var req session.CreateInput
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
 			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}
@@ -120,7 +121,8 @@ func (s *server) handleCCSessionFork(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 	var req session.CreateInput
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+		s.reportRequestDecodeIssue(r, err)
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 		return
 	}

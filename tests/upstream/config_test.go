@@ -21,6 +21,7 @@ func TestParseAdaptersFromEnv(t *testing.T) {
 			"kind":"openai",
 			"base_url":"https://example.com",
 			"api_key_env":"MY_KEY",
+			"supports_vision":false,
 			"force_stream":true,
 			"stream_options":{"include_usage":true}
 		}
@@ -35,6 +36,14 @@ func TestParseAdaptersFromEnv(t *testing.T) {
 	}
 	if adapters[0].Name() != "a1" {
 		t.Fatalf("unexpected adapter name: %s", adapters[0].Name())
+	}
+	specProvider, ok := adapters[0].(interface{ AdminSpec() AdapterSpec })
+	if !ok {
+		t.Fatalf("adapter does not implement AdminSpec")
+	}
+	spec := specProvider.AdminSpec()
+	if spec.SupportsVision == nil || *spec.SupportsVision {
+		t.Fatalf("expected supports_vision=false in admin spec, got %#v", spec.SupportsVision)
 	}
 }
 

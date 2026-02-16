@@ -76,7 +76,8 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req OpenAIChatCompletionsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodySingle(r, &req, false); err != nil {
+		s.reportRequestDecodeIssue(r, err)
 		statusCode = http.StatusBadRequest
 		errText = "invalid JSON body"
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
@@ -87,6 +88,12 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		statusCode = http.StatusBadRequest
 		errText = err.Error()
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if err := s.enforceTokenModelAccess(r.Context(), msgReq.Model); err != nil {
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "permission_error", err.Error())
 		return
 	}
 
@@ -107,6 +114,7 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	}
 	upstreamModel = mappedModel
 	msgReq.Model = mappedModel
+	msgReq.Metadata = s.applyChannelRoutePolicy(r.Context(), msgReq.Metadata, mappedModel)
 
 	action := policy.Action{
 		Path:      "/v1/chat/completions",
@@ -158,23 +166,53 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		creq.Metadata = map[string]any{}
 	}
 	creq.Metadata["mode"] = mode
+	creq.Metadata["session_id"] = sessionID
+	creq.Metadata["request_path"] = "/v1/chat/completions"
 	creq.Metadata["client_model"] = clientModel
 	creq.Metadata["requested_model"] = requestedModel
 	creq.Metadata["upstream_model"] = mappedModel
-
-	if msgReq.Stream {
-		generatedText = s.streamOpenAIChatCompletions(w, r, creq, requestedModel)
+	reservedQuota := estimateReservedQuota(msgReq.MaxTokens, msgReq.System, msgReq.Messages)
+	if err := s.reserveQuotaFromRequestContext(r.Context(), reservedQuota); err != nil {
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "quota_error", err.Error())
 		return
 	}
 
+	if msgReq.Stream {
+		creq = s.applyVisionFallback(r.Context(), creq)
+		creq = s.applyToolSupportFallback(creq)
+		var usage orchestrator.Usage
+		if s.shouldStreamWithToolLoop(creq) {
+			generatedText, usage = s.streamOpenAIChatCompletionsWithToolLoop(w, r, creq, requestedModel)
+		} else {
+			generatedText, usage = s.streamOpenAIChatCompletions(w, r, creq, requestedModel)
+		}
+		if err := s.settleQuotaFromRequestContext(r.Context(), reservedQuota, usageToQuotaAmount(usage.InputTokens, usage.OutputTokens)); err != nil {
+			statusCode = http.StatusForbidden
+			errText = err.Error()
+		}
+		return
+	}
+
+	creq = s.applyVisionFallback(r.Context(), creq)
+	creq = s.applyToolSupportFallback(creq)
 	resp, err := s.completeWithToolLoop(r.Context(), creq)
 	if err != nil {
+		_ = s.refundQuotaFromRequestContext(r.Context(), reservedQuota)
 		statusCode = http.StatusBadGateway
 		errText = err.Error()
 		s.writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
 	generatedText = collectResponseText(resp)
+	if err := s.settleQuotaFromRequestContext(r.Context(), reservedQuota, usageToQuotaAmount(resp.Usage.InputTokens, resp.Usage.OutputTokens)); err != nil {
+		_ = s.refundQuotaFromRequestContext(r.Context(), reservedQuota)
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "quota_error", err.Error())
+		return
+	}
 
 	out := toOpenAIChatCompletionsResponse(s.nextID("chatcmpl"), clientModel, resp)
 	w.Header().Set("content-type", "application/json")
@@ -182,12 +220,13 @@ func (s *server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (s *server) streamOpenAIChatCompletions(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) string {
+func (s *server) streamOpenAIChatCompletions(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) (string, orchestrator.Usage) {
 	var generated strings.Builder
+	var usage orchestrator.Usage
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
-		return generated.String()
+		return generated.String(), usage
 	}
 
 	w.Header().Set("content-type", "text/event-stream")
@@ -205,16 +244,19 @@ func (s *server) streamOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			if !ok {
 				_ = writeOpenAISSEData(w, "[DONE]")
 				flusher.Flush()
-				return generated.String()
+				return generated.String(), usage
 			}
 			appendStreamText(&generated, ev)
+			if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
+				usage = ev.Usage
+			}
 			chunk := openAIChatChunkFromEvent(streamID, outwardModel, created, ev)
 			if chunk == nil {
 				continue
 			}
 			raw, _ := json.Marshal(chunk)
 			if err := writeOpenAISSEData(w, string(raw)); err != nil {
-				return generated.String()
+				return generated.String(), usage
 			}
 			flusher.Flush()
 		case err, ok := <-errs:
@@ -223,9 +265,9 @@ func (s *server) streamOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			}
 			_ = writeOpenAISSEData(w, fmt.Sprintf(`{"error":{"message":%q}}`, err.Error()))
 			flusher.Flush()
-			return generated.String()
+			return generated.String(), usage
 		case <-r.Context().Done():
-			return generated.String()
+			return generated.String(), usage
 		}
 	}
 }
@@ -292,7 +334,8 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req OpenAIResponsesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodySingle(r, &req, false); err != nil {
+		s.reportRequestDecodeIssue(r, err)
 		statusCode = http.StatusBadRequest
 		errText = "invalid JSON body"
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
@@ -303,6 +346,12 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		statusCode = http.StatusBadRequest
 		errText = err.Error()
 		s.writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if err := s.enforceTokenModelAccess(r.Context(), msgReq.Model); err != nil {
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "permission_error", err.Error())
 		return
 	}
 
@@ -323,6 +372,7 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreamModel = mappedModel
 	msgReq.Model = mappedModel
+	msgReq.Metadata = s.applyChannelRoutePolicy(r.Context(), msgReq.Metadata, mappedModel)
 
 	action := policy.Action{
 		Path:      "/v1/responses",
@@ -374,23 +424,53 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		creq.Metadata = map[string]any{}
 	}
 	creq.Metadata["mode"] = mode
+	creq.Metadata["session_id"] = sessionID
+	creq.Metadata["request_path"] = "/v1/responses"
 	creq.Metadata["client_model"] = clientModel
 	creq.Metadata["requested_model"] = requestedModel
 	creq.Metadata["upstream_model"] = mappedModel
-
-	if msgReq.Stream {
-		generatedText = s.streamOpenAIResponses(w, r, creq, requestedModel)
+	reservedQuota := estimateReservedQuota(msgReq.MaxTokens, msgReq.System, msgReq.Messages)
+	if err := s.reserveQuotaFromRequestContext(r.Context(), reservedQuota); err != nil {
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "quota_error", err.Error())
 		return
 	}
 
+	if msgReq.Stream {
+		creq = s.applyVisionFallback(r.Context(), creq)
+		creq = s.applyToolSupportFallback(creq)
+		var usage orchestrator.Usage
+		if s.shouldStreamWithToolLoop(creq) {
+			generatedText, usage = s.streamOpenAIResponsesWithToolLoop(w, r, creq, requestedModel)
+		} else {
+			generatedText, usage = s.streamOpenAIResponses(w, r, creq, requestedModel)
+		}
+		if err := s.settleQuotaFromRequestContext(r.Context(), reservedQuota, usageToQuotaAmount(usage.InputTokens, usage.OutputTokens)); err != nil {
+			statusCode = http.StatusForbidden
+			errText = err.Error()
+		}
+		return
+	}
+
+	creq = s.applyVisionFallback(r.Context(), creq)
+	creq = s.applyToolSupportFallback(creq)
 	resp, err := s.completeWithToolLoop(r.Context(), creq)
 	if err != nil {
+		_ = s.refundQuotaFromRequestContext(r.Context(), reservedQuota)
 		statusCode = http.StatusBadGateway
 		errText = err.Error()
 		s.writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
 	generatedText = collectResponseText(resp)
+	if err := s.settleQuotaFromRequestContext(r.Context(), reservedQuota, usageToQuotaAmount(resp.Usage.InputTokens, resp.Usage.OutputTokens)); err != nil {
+		_ = s.refundQuotaFromRequestContext(r.Context(), reservedQuota)
+		statusCode = http.StatusForbidden
+		errText = err.Error()
+		s.writeError(w, http.StatusForbidden, "quota_error", err.Error())
+		return
+	}
 	out := toOpenAIResponsesResponse(s.nextID("resp"), clientModel, resp)
 
 	w.Header().Set("content-type", "application/json")
@@ -398,12 +478,13 @@ func (s *server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) string {
+func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, req orchestrator.Request, outwardModel string) (string, orchestrator.Usage) {
 	var generated strings.Builder
+	var usage orchestrator.Usage
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
-		return generated.String()
+		return generated.String(), usage
 	}
 
 	w.Header().Set("content-type", "text/event-stream")
@@ -438,16 +519,19 @@ func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, r
 				_ = writeOpenAISSEData(w, string(raw))
 				_ = writeOpenAISSEData(w, "[DONE]")
 				flusher.Flush()
-				return generated.String()
+				return generated.String(), usage
 			}
 			appendStreamText(&generated, ev)
+			if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
+				usage = ev.Usage
+			}
 			item := openAIResponseStreamEvent(respID, ev)
 			if item == nil {
 				continue
 			}
 			raw, _ := json.Marshal(item)
 			if err := writeOpenAISSEData(w, string(raw)); err != nil {
-				return generated.String()
+				return generated.String(), usage
 			}
 			flusher.Flush()
 		case err, ok := <-errs:
@@ -456,9 +540,9 @@ func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, r
 			}
 			_ = writeOpenAISSEData(w, fmt.Sprintf(`{"type":"error","error":{"message":%q}}`, err.Error()))
 			flusher.Flush()
-			return generated.String()
+			return generated.String(), usage
 		case <-r.Context().Done():
-			return generated.String()
+			return generated.String(), usage
 		}
 	}
 }
@@ -478,17 +562,15 @@ func openAIChatToMessagesRequest(req OpenAIChatCompletionsRequest) (MessagesRequ
 
 	msgs := make([]MessageParam, 0, len(req.Messages))
 	systemParts := make([]string, 0, 1)
-	for _, m := range req.Messages {
-		if strings.EqualFold(strings.TrimSpace(m.Role), "system") {
-			if text := openAIContentToText(m.Content); strings.TrimSpace(text) != "" {
-				systemParts = append(systemParts, text)
-			}
-			continue
+	for i, m := range req.Messages {
+		converted, systemText, err := openAIChatMessageToMessageParams(m)
+		if err != nil {
+			return MessagesRequest{}, fmt.Errorf("messages[%d]: %w", i, err)
 		}
-		msgs = append(msgs, MessageParam{
-			Role:    m.Role,
-			Content: m.Content,
-		})
+		if strings.TrimSpace(systemText) != "" {
+			systemParts = append(systemParts, systemText)
+		}
+		msgs = append(msgs, converted...)
 	}
 	if len(msgs) == 0 {
 		return MessagesRequest{}, fmt.Errorf("messages must include at least one non-system message")
@@ -524,6 +606,73 @@ func openAIChatToMessagesRequest(req OpenAIChatCompletionsRequest) (MessagesRequ
 	}, nil
 }
 
+func openAIChatMessageToMessageParams(m OpenAIChatMessage) ([]MessageParam, string, error) {
+	role := strings.ToLower(strings.TrimSpace(m.Role))
+	switch role {
+	case "system":
+		return nil, openAIContentToText(m.Content), nil
+	case "tool":
+		toolCallID := strings.TrimSpace(m.ToolCallID)
+		if toolCallID == "" {
+			return nil, "", fmt.Errorf("tool message missing tool_call_id")
+		}
+		return []MessageParam{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": toolCallID,
+						"content":     openAIContentToToolResult(m.Content),
+					},
+				},
+			},
+		}, "", nil
+	case "assistant":
+		if len(m.ToolCalls) == 0 {
+			if m.Content == nil {
+				return []MessageParam{{Role: "assistant", Content: ""}}, "", nil
+			}
+			return []MessageParam{{Role: "assistant", Content: m.Content}}, "", nil
+		}
+		blocks := make([]any, 0, 1+len(m.ToolCalls))
+		if text := openAIContentToText(m.Content); strings.TrimSpace(text) != "" {
+			blocks = append(blocks, map[string]any{
+				"type": "text",
+				"text": text,
+			})
+		}
+		for i, tc := range m.ToolCalls {
+			name := strings.TrimSpace(tc.Function.Name)
+			if name == "" {
+				return nil, "", fmt.Errorf("assistant tool_call[%d] missing function name", i)
+			}
+			callID := strings.TrimSpace(tc.ID)
+			if callID == "" {
+				callID = fmt.Sprintf("toolu_%d", i+1)
+			}
+			blocks = append(blocks, map[string]any{
+				"type":  "tool_use",
+				"id":    callID,
+				"name":  name,
+				"input": parseOpenAIToolArguments(tc.Function.Arguments),
+			})
+		}
+		if len(blocks) == 0 {
+			blocks = append(blocks, map[string]any{
+				"type": "text",
+				"text": "",
+			})
+		}
+		return []MessageParam{{Role: "assistant", Content: blocks}}, "", nil
+	default:
+		if m.Content == nil {
+			return []MessageParam{{Role: m.Role, Content: ""}}, "", nil
+		}
+		return []MessageParam{{Role: m.Role, Content: m.Content}}, "", nil
+	}
+}
+
 func openAIContentToText(content any) string {
 	switch c := content.(type) {
 	case string:
@@ -542,6 +691,38 @@ func openAIContentToText(content any) string {
 		return strings.Join(parts, "\n")
 	default:
 		return ""
+	}
+}
+
+func openAIContentToToolResult(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []any:
+		return openAIContentToText(c)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", c)
+	}
+}
+
+func parseOpenAIToolArguments(arguments string) map[string]any {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return map[string]any{}
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(arguments), &decoded); err != nil {
+		return map[string]any{
+			"_raw": arguments,
+		}
+	}
+	if obj, ok := decoded.(map[string]any); ok {
+		return obj
+	}
+	return map[string]any{
+		"value": decoded,
 	}
 }
 
@@ -572,12 +753,15 @@ func openAIResponsesToMessagesRequest(req OpenAIResponsesRequest) (MessagesReque
 	}
 
 	return MessagesRequest{
-		Model:     req.Model,
-		MaxTokens: maxTokens,
-		Messages:  msgs,
-		Stream:    req.Stream,
-		Tools:     tools,
-		Metadata:  req.Metadata,
+		Model:       req.Model,
+		MaxTokens:   maxTokens,
+		Messages:    msgs,
+		Stream:      req.Stream,
+		Tools:       tools,
+		ToolChoice:  req.ToolChoice,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		Metadata:    mergeMetadata(req.Metadata, req.StreamOptions),
 	}, nil
 }
 
@@ -603,20 +787,16 @@ func parseResponsesInput(input any) ([]MessageParam, error) {
 		}, nil
 	case []any:
 		out := make([]MessageParam, 0, len(v))
-		for _, item := range v {
+		for i, item := range v {
 			obj, ok := item.(map[string]any)
 			if !ok {
 				continue
 			}
-			role, _ := obj["role"].(string)
-			content := obj["content"]
-			if strings.TrimSpace(role) == "" {
-				role = "user"
+			converted, err := parseResponsesInputItem(i, obj)
+			if err != nil {
+				return nil, err
 			}
-			out = append(out, MessageParam{
-				Role:    role,
-				Content: content,
-			})
+			out = append(out, converted...)
 		}
 		if len(out) == 0 {
 			return nil, fmt.Errorf("input is required")
@@ -625,6 +805,152 @@ func parseResponsesInput(input any) ([]MessageParam, error) {
 	default:
 		return nil, fmt.Errorf("input must be string or array")
 	}
+}
+
+func parseResponsesInputItem(index int, obj map[string]any) ([]MessageParam, error) {
+	role := strings.TrimSpace(stringFromAny(obj["role"]))
+	itemType := strings.ToLower(strings.TrimSpace(stringFromAny(obj["type"])))
+
+	// Support role-style input items and preserve OpenAI tool history payloads.
+	if role != "" || itemType == "message" {
+		if role == "" {
+			role = "user"
+		}
+		chatMsg := OpenAIChatMessage{
+			Role:       role,
+			Content:    obj["content"],
+			ToolCallID: firstNonEmptyString(obj, "tool_call_id", "call_id"),
+			ToolCalls:  parseOpenAIToolCallsFromAny(obj["tool_calls"]),
+		}
+		converted, _, err := openAIChatMessageToMessageParams(chatMsg)
+		if err != nil {
+			return nil, fmt.Errorf("input[%d]: %w", index, err)
+		}
+		return converted, nil
+	}
+
+	switch itemType {
+	case "function_call", "tool_call":
+		name := strings.TrimSpace(stringFromAny(obj["name"]))
+		if name == "" {
+			return nil, fmt.Errorf("input[%d]: function_call name is required", index)
+		}
+		callID := firstNonEmptyString(obj, "call_id", "id")
+		if callID == "" {
+			callID = fmt.Sprintf("toolu_resp_%d", index+1)
+		}
+		inputObj := map[string]any{}
+		if rawArgs, ok := obj["arguments"]; ok {
+			inputObj = parseToolInputValue(rawArgs)
+		} else if rawInput, ok := obj["input"]; ok {
+			inputObj = parseToolInputValue(rawInput)
+		}
+		return []MessageParam{
+			{
+				Role: "assistant",
+				Content: []any{
+					map[string]any{
+						"type":  "tool_use",
+						"id":    callID,
+						"name":  name,
+						"input": inputObj,
+					},
+				},
+			},
+		}, nil
+	case "function_call_output", "tool_result":
+		callID := firstNonEmptyString(obj, "call_id", "tool_call_id", "id")
+		if callID == "" {
+			return nil, fmt.Errorf("input[%d]: function_call_output call_id is required", index)
+		}
+		output := openAIContentToToolResult(obj["output"])
+		if strings.TrimSpace(output) == "" {
+			output = openAIContentToToolResult(obj["content"])
+		}
+		return []MessageParam{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": callID,
+						"content":     output,
+					},
+				},
+			},
+		}, nil
+	default:
+		if content, ok := obj["content"]; ok {
+			return []MessageParam{
+				{Role: "user", Content: content},
+			}, nil
+		}
+		if text := strings.TrimSpace(stringFromAny(obj["text"])); text != "" {
+			return []MessageParam{
+				{Role: "user", Content: text},
+			}, nil
+		}
+		return nil, nil
+	}
+}
+
+func parseOpenAIToolCallsFromAny(raw any) []OpenAIToolCall {
+	switch v := raw.(type) {
+	case []OpenAIToolCall:
+		if len(v) == 0 {
+			return nil
+		}
+		out := make([]OpenAIToolCall, len(v))
+		copy(out, v)
+		return out
+	case []any:
+		out := make([]OpenAIToolCall, 0, len(v))
+		for _, item := range v {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			call := OpenAIToolCall{
+				ID:   strings.TrimSpace(stringFromAny(obj["id"])),
+				Type: strings.TrimSpace(stringFromAny(obj["type"])),
+			}
+			if call.Type == "" {
+				call.Type = "function"
+			}
+			if fn, ok := obj["function"].(map[string]any); ok {
+				call.Function = OpenAIToolFunction{
+					Name:      strings.TrimSpace(stringFromAny(fn["name"])),
+					Arguments: strings.TrimSpace(stringFromAny(fn["arguments"])),
+				}
+			}
+			out = append(out, call)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func parseToolInputValue(raw any) map[string]any {
+	switch v := raw.(type) {
+	case map[string]any:
+		return v
+	case string:
+		return parseOpenAIToolArguments(v)
+	case nil:
+		return map[string]any{}
+	default:
+		return map[string]any{"value": v}
+	}
+}
+
+func firstNonEmptyString(obj map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if text := strings.TrimSpace(stringFromAny(obj[key])); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func toOpenAIChatCompletionsResponse(id, outwardModel string, resp orchestrator.Response) OpenAIChatCompletionsResponse {

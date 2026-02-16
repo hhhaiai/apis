@@ -48,6 +48,9 @@ func NewDefaultExecutor() *Registry {
 	r.Register("file_read", handleFileRead)
 	r.Register("file_write", handleFileWrite)
 	r.Register("file_list", handleFileList)
+	r.Register("rabbit_publish", handleRabbitPublish)
+	r.Register("rabbit_get", handleRabbitGet)
+	r.Register("rabbit_rpc", handleRabbitRPC)
 	return r
 }
 

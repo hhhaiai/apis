@@ -10,19 +10,23 @@ import (
 )
 
 type Entry struct {
-	Timestamp      string `json:"timestamp"`
-	RunID          string `json:"run_id,omitempty"`
-	Path           string `json:"path"`
-	Mode           string `json:"mode,omitempty"`
-	ClientModel    string `json:"client_model,omitempty"`
-	RequestedModel string `json:"requested_model,omitempty"`
-	UpstreamModel  string `json:"upstream_model,omitempty"`
-	Stream         bool   `json:"stream"`
-	ToolCount      int    `json:"tool_count"`
-	Status         int    `json:"status"`
-	Error          string `json:"error,omitempty"`
-	RecordText     string `json:"record_text,omitempty"`
-	DurationMS     int64  `json:"duration_ms"`
+	Timestamp      string   `json:"timestamp"`
+	RunID          string   `json:"run_id,omitempty"`
+	Path           string   `json:"path"`
+	Reason         string   `json:"reason,omitempty"`
+	Mode           string   `json:"mode,omitempty"`
+	ClientModel    string   `json:"client_model,omitempty"`
+	RequestedModel string   `json:"requested_model,omitempty"`
+	UpstreamModel  string   `json:"upstream_model,omitempty"`
+	Stream         bool     `json:"stream"`
+	ToolCount      int      `json:"tool_count"`
+	Status         int      `json:"status"`
+	Error          string   `json:"error,omitempty"`
+	RecordText     string   `json:"record_text,omitempty"`
+	Unsupported    []string `json:"unsupported_fields,omitempty"`
+	RequestBody    string   `json:"request_body,omitempty"`
+	CurlCommand    string   `json:"curl_command,omitempty"`
+	DurationMS     int64    `json:"duration_ms"`
 }
 
 type Logger interface {

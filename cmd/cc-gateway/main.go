@@ -11,10 +11,14 @@ import (
 	"time"
 
 	"ccgateway/internal/agentteam"
+	"ccgateway/internal/auth"
 	"ccgateway/internal/ccevent"
 	"ccgateway/internal/ccrun"
+	"ccgateway/internal/channel"
 	"ccgateway/internal/gateway"
+	"ccgateway/internal/marketplace"
 	"ccgateway/internal/mcpregistry"
+	"ccgateway/internal/memory"
 	"ccgateway/internal/modelmap"
 	"ccgateway/internal/plan"
 	"ccgateway/internal/plugin"
@@ -27,6 +31,7 @@ import (
 	"ccgateway/internal/statepersist"
 	"ccgateway/internal/subagent"
 	"ccgateway/internal/todo"
+	"ccgateway/internal/token"
 	"ccgateway/internal/toolcatalog"
 	"ccgateway/internal/upstream"
 )
@@ -66,10 +71,18 @@ func main() {
 		log.Fatalf("invalid judge config: %v", err)
 	}
 
+	// Initialize settings first to get intelligent dispatch config
+	settingsStore, err := settings.NewFromEnv()
+	if err != nil {
+		log.Fatalf("invalid runtime settings: %v", err)
+	}
+	runtimeSettings := settingsStore.Get()
+
 	// Election: auto-intelligence evaluation + scheduler model election
 	election := scheduler.NewElection(scheduler.ElectionConfig{
-		Enabled:            upstream.ParseBoolEnv("ENABLE_TASK_DISPATCH", false),
-		MinScoreDifference: 5,
+		Enabled:            runtimeSettings.IntelligentDispatch.Enabled,
+		MinScoreDifference: runtimeSettings.IntelligentDispatch.MinScoreDifference,
+		ReElectInterval:    time.Duration(runtimeSettings.IntelligentDispatch.ReElectIntervalMS) * time.Millisecond,
 	})
 	election.SetOnChange(func(result scheduler.ElectionResult) {
 		log.Printf("election: scheduler=%s (score=%.0f), workers=%d, reason=%s",
@@ -78,8 +91,9 @@ func main() {
 	})
 
 	// Dispatcher: routes complex requests to scheduler, simple to workers
+	// Default enabled=true from settings
 	dispatcher := upstream.NewDispatcher(upstream.DispatchConfig{
-		Enabled: upstream.ParseBoolEnv("ENABLE_TASK_DISPATCH", false),
+		Enabled: runtimeSettings.IntelligentDispatch.Enabled,
 	}, election)
 
 	svc := upstream.NewRouterService(upstream.RouterConfig{
@@ -98,14 +112,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid model mapping config: %v", err)
 	}
-	settingsStore, err := settings.NewFromEnv()
-	if err != nil {
-		log.Fatalf("invalid runtime settings: %v", err)
-	}
-	tools, err := toolcatalog.NewFromEnv()
+	// settingsStore already initialized above for intelligent dispatch
+	toolsBase, err := toolcatalog.NewFromEnv()
 	if err != nil {
 		log.Fatalf("invalid tool catalog: %v", err)
 	}
+	tools := toolcatalog.NewScopedCatalog(toolsBase.Snapshot())
 	logPath := os.Getenv("RUN_LOG_PATH")
 	if logPath == "" {
 		logPath = "logs/run-events.log"
@@ -220,6 +232,32 @@ func main() {
 		log.Fatalf("invalid mcp registry config: %v", err)
 	}
 	pluginStore := plugin.NewManager()
+
+	// Initialize Marketplace Service
+	marketplaceDir := "configs/marketplace"
+	marketplaceRegistry := marketplace.NewLocalRegistry(marketplaceDir)
+	if err := marketplaceRegistry.Refresh(); err != nil {
+		log.Printf("warning: failed to load marketplace registry: %v", err)
+	} else {
+		manifests, _ := marketplaceRegistry.List()
+		log.Printf("marketplace: loaded %d plugin manifests from %s", len(manifests), marketplaceDir)
+	}
+
+	// Initialize stats tracker with persistence
+	statsFile := "data/marketplace-stats.json"
+	statsTracker := marketplace.NewStatsTrackerWithPersistence(statsFile)
+	log.Printf("marketplace: stats tracker initialized with persistence at %s", statsFile)
+
+	marketplaceService := marketplace.NewServiceWithStats(marketplaceRegistry, pluginStore, statsTracker)
+
+	// Initialize Auth Services
+	authService := auth.NewInMemoryService()
+	tokenService := token.NewInMemoryService()
+	channelStore := channel.NewAbilityStore()
+
+	// Default admin user
+	_, _ = authService.Register("admin", "admin123", "admin")
+
 	adminToken := strings.TrimSpace(os.Getenv("ADMIN_TOKEN"))
 	if adminToken == "" {
 		adminToken = gateway.DefaultAdminToken
@@ -229,24 +267,30 @@ func main() {
 	}
 
 	router := gateway.NewRouter(gateway.Dependencies{
-		Orchestrator:    svc,
-		Policy:          policy.NewDynamicEngine(settingsStore, tools),
-		ModelMapper:     mapper,
-		Settings:        settingsStore,
-		ToolCatalog:     tools,
-		SessionStore:    sessionStore,
-		RunStore:        runStore,
-		TodoStore:       todoStore,
-		PlanStore:       planStore,
-		EventStore:      eventStore,
-		TeamStore:       teamStore,
-		SubagentStore:   subagentManager,
-		MCPRegistry:     mcpStore,
-		PluginStore:     pluginStore,
-		SchedulerStatus: selector,
-		ProbeStatus:     probeRunner,
-		AdminToken:      adminToken,
-		RunLogger:       runLogger,
+		Orchestrator:       svc,
+		Policy:             policy.NewDynamicEngine(settingsStore, tools),
+		ModelMapper:        mapper,
+		Settings:           settingsStore,
+		ToolCatalog:        tools,
+		SessionStore:       sessionStore,
+		RunStore:           runStore,
+		TodoStore:          todoStore,
+		PlanStore:          planStore,
+		EventStore:         eventStore,
+		TeamStore:          teamStore,
+		SubagentStore:      subagentManager,
+		MCPRegistry:        mcpStore,
+		PluginStore:        pluginStore,
+		MarketplaceService: marketplaceService,
+		SchedulerStatus:    selector,
+		ProbeStatus:        probeRunner,
+		AdminToken:         adminToken,
+		RunLogger:          runLogger,
+		MemoryStore:        memory.NewInMemoryStore(),
+		Summarizer:         memory.NewLLMSummarizer(svc, "claude-3-haiku-20240307"),
+		AuthService:        authService,
+		TokenService:       tokenService,
+		ChannelStore:       channelStore,
 	})
 
 	server := &http.Server{

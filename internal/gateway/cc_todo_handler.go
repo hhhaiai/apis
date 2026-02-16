@@ -18,7 +18,8 @@ func (s *server) handleCCTodos(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var req todo.CreateInput
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
 			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}
@@ -90,7 +91,8 @@ func (s *server) handleCCTodoByPath(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(out)
 	case http.MethodPut:
 		var req todo.UpdateInput
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
 			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}

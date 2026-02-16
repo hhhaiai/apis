@@ -1,0 +1,33 @@
+{
+  "name": "anthropic-proxy",
+  "version": "1.0.0",
+  "description": "Anthropic API proxy configuration for routing requests to Claude models. Supports Claude 3 Opus, Sonnet, and Haiku with streaming and tool use capabilities.",
+  "author": "CC Gateway Team",
+  "tags": ["proxy", "anthropic", "claude", "integration"],
+  "source": "builtin.ccgateway",
+  "verified": true,
+  "license": "AGPL-3.0-or-later",
+  "dependencies": [],
+  "skills": [],
+  "hooks": [],
+  "mcp_servers": [],
+  "config_schema": {
+    "api_key": {
+      "type": "string",
+      "description": "Anthropic API key",
+      "required": true
+    },
+    "base_url": {
+      "type": "url",
+      "description": "Anthropic API base URL",
+      "required": false,
+      "default": "https://api.anthropic.com"
+    },
+    "default_model": {
+      "type": "string",
+      "description": "Default Claude model to use",
+      "required": false,
+      "default": "claude-3-5-sonnet-20241022"
+    }
+  }
+}

@@ -22,8 +22,9 @@ func (s *server) handleCCEval(w http.ResponseWriter, r *http.Request) {
 		Prompt   string `json:"prompt"`
 		Response string `json:"response"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
+	if err := decodeJSONBodyStrict(r, &req, false); err != nil {
+		s.reportRequestDecodeIssue(r, err)
+		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 		return
 	}
 	if req.Prompt == "" {

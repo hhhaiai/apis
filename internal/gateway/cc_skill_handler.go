@@ -33,8 +33,9 @@ func (s *server) handleCCSkills(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPost:
 		var sk skill.Skill
-		if err := json.NewDecoder(r.Body).Decode(&sk); err != nil {
-			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
+		if err := decodeJSONBodyStrict(r, &sk, false); err != nil {
+			s.reportRequestDecodeIssue(r, err)
+			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 			return
 		}
 		if err := s.skillEngine.Register(sk); err != nil {
@@ -92,8 +93,9 @@ func (s *server) handleCCSkillExecute(w http.ResponseWriter, r *http.Request, na
 	var body struct {
 		Parameters map[string]any `json:"parameters"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
+	if err := decodeJSONBodyStrict(r, &body, false); err != nil {
+		s.reportRequestDecodeIssue(r, err)
+		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 		return
 	}
 	if body.Parameters == nil {

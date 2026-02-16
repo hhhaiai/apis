@@ -5,6 +5,15 @@
     "plan": "GLM-5-thinking-search",
     "default": "GLM-4.5"
   },
+  "vision_support_hints": {
+    "gpt-3.5-*": false,
+    "GLM-4.5V": true
+  },
+  "tool_aliases": {
+    "read_file": "file_read",
+    "write_file": "file_write",
+    "list_files": "file_list"
+  },
   "prompt_prefixes": {
     "chat": "回答要简洁并给出可执行步骤。",
     "plan": "先给计划，再执行，最后汇报结果。"
@@ -25,6 +34,8 @@
   },
   "tool_loop": {
     "mode": "client_loop",
-    "max_steps": 4
+    "max_steps": 4,
+    "emulation_mode": "native",
+    "planner_model": ""
   }
 }

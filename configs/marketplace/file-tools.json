@@ -1,0 +1,44 @@
+{
+  "name": "file-tools",
+  "version": "1.0.0",
+  "description": "File system operation tools for AI agents. Provides file_read, file_write, and file_list capabilities for managing files and directories safely within configured boundaries.",
+  "author": "CC Gateway Team",
+  "tags": ["tools", "file", "filesystem", "io"],
+  "source": "builtin.ccgateway",
+  "verified": true,
+  "license": "AGPL-3.0-or-later",
+  "dependencies": [],
+  "skills": [
+    {
+      "name": "file-read",
+      "description": "Read contents of a file",
+      "template": "Use file_read tool to read: {{filepath}}"
+    },
+    {
+      "name": "file-write",
+      "description": "Write content to a file",
+      "template": "Use file_write tool to write to: {{filepath}}"
+    },
+    {
+      "name": "file-list",
+      "description": "List files in a directory",
+      "template": "Use file_list tool to list files in: {{directory}}"
+    }
+  ],
+  "hooks": [],
+  "mcp_servers": [],
+  "config_schema": {
+    "allowed_paths": {
+      "type": "string",
+      "description": "Comma-separated list of allowed file paths",
+      "required": false,
+      "default": "/tmp,/var/tmp"
+    },
+    "max_file_size": {
+      "type": "int",
+      "description": "Maximum file size in bytes",
+      "required": false,
+      "default": "10485760"
+    }
+  }
+}

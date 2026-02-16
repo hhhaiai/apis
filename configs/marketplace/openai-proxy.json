@@ -1,0 +1,33 @@
+{
+  "name": "openai-proxy",
+  "version": "1.0.0",
+  "description": "OpenAI API proxy configuration for routing requests to OpenAI's GPT models. Supports GPT-4, GPT-3.5, and other OpenAI models with automatic retry and failover.",
+  "author": "CC Gateway Team",
+  "tags": ["proxy", "openai", "gpt", "integration"],
+  "source": "builtin.ccgateway",
+  "verified": true,
+  "license": "AGPL-3.0-or-later",
+  "dependencies": [],
+  "skills": [],
+  "hooks": [],
+  "mcp_servers": [],
+  "config_schema": {
+    "api_key": {
+      "type": "string",
+      "description": "OpenAI API key",
+      "required": true
+    },
+    "base_url": {
+      "type": "url",
+      "description": "OpenAI API base URL",
+      "required": false,
+      "default": "https://api.openai.com/v1"
+    },
+    "default_model": {
+      "type": "string",
+      "description": "Default model to use",
+      "required": false,
+      "default": "gpt-4"
+    }
+  }
+}

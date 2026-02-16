@@ -118,3 +118,45 @@ func TestCCTodosBadLimit(t *testing.T) {
 		t.Fatalf("expected 400, got %d; body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCCTodosRejectUnknownFieldsOnCreate(t *testing.T) {
+	st := todo.NewStore()
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		TodoStore:    st,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cc/todos", strings.NewReader(`{"title":"task","session_id":"sess_1","unknown_field":1}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCCTodosUpdateRejectTrailingJSON(t *testing.T) {
+	st := todo.NewStore()
+	created, err := st.Create(todo.CreateInput{
+		Title:     "todo item",
+		SessionID: "sess_1",
+	})
+	if err != nil {
+		t.Fatalf("create todo: %v", err)
+	}
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		TodoStore:    st,
+	})
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/cc/todos/"+created.ID, strings.NewReader(`{"status":"completed"} {}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing JSON, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}

@@ -51,6 +51,8 @@ type ScriptAdapterConfig struct {
 	Env            map[string]string `json:"env,omitempty"`
 	WorkDir        string            `json:"work_dir,omitempty"`
 	Model          string            `json:"model,omitempty"`
+	SupportsVision *bool             `json:"supports_vision,omitempty"`
+	SupportsTools  *bool             `json:"supports_tools,omitempty"`
 	TimeoutMS      int               `json:"timeout_ms,omitempty"`
 	MaxOutputBytes int               `json:"max_output_bytes,omitempty"`
 }
@@ -62,6 +64,8 @@ type ScriptAdapter struct {
 	env            map[string]string
 	workDir        string
 	model          string
+	supportsVision *bool
+	supportsTools  *bool
 	timeout        time.Duration
 	maxOutputBytes int
 }
@@ -91,6 +95,8 @@ func NewScriptAdapter(cfg ScriptAdapterConfig) (*ScriptAdapter, error) {
 		env:            copyStringMap(cfg.Env),
 		workDir:        strings.TrimSpace(cfg.WorkDir),
 		model:          strings.TrimSpace(cfg.Model),
+		supportsVision: cloneBoolPtr(cfg.SupportsVision),
+		supportsTools:  cloneBoolPtr(cfg.SupportsTools),
 		timeout:        timeout,
 		maxOutputBytes: maxOutput,
 	}, nil
@@ -114,6 +120,8 @@ func (a *ScriptAdapter) AdminSpec() AdapterSpec {
 		Env:            copyStringMap(a.env),
 		WorkDir:        a.workDir,
 		Model:          a.model,
+		SupportsVision: cloneBoolPtr(a.supportsVision),
+		SupportsTools:  cloneBoolPtr(a.supportsTools),
 		TimeoutMS:      timeoutMS,
 		MaxOutputBytes: a.maxOutputBytes,
 	}

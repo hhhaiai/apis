@@ -47,9 +47,9 @@ func (s *RouterService) applyReflectionLoop(ctx context.Context, resp orchestrat
 				{Role: "user", Content: fmt.Sprintf(reflectionCriticPrompt, currentText)},
 			},
 			Metadata: map[string]any{
-				"reflection_pass":    pass + 1,
-				"reflection_phase":   "critique",
-				"reflection_passes":  0, // prevent recursive reflection
+				"reflection_pass":   pass + 1,
+				"reflection_phase":  "critique",
+				"reflection_passes": 0, // prevent recursive reflection
 			},
 			Headers: req.Headers,
 		}
@@ -79,9 +79,9 @@ func (s *RouterService) applyReflectionLoop(ctx context.Context, resp orchestrat
 				{Role: "user", Content: fmt.Sprintf(reflectionFixPrompt, currentText, critique)},
 			},
 			Metadata: map[string]any{
-				"reflection_pass":    pass + 1,
-				"reflection_phase":   "fix",
-				"reflection_passes":  0, // prevent recursive reflection
+				"reflection_pass":   pass + 1,
+				"reflection_phase":  "fix",
+				"reflection_passes": 0, // prevent recursive reflection
 			},
 			Headers: req.Headers,
 		}
@@ -110,7 +110,7 @@ func (s *RouterService) applyReflectionLoop(ctx context.Context, resp orchestrat
 
 // completeOnce performs a single completion without reflection or parallel candidates.
 func (s *RouterService) completeOnce(ctx context.Context, req orchestrator.Request) (orchestrator.Response, error) {
-	candidates := s.routeForRequest(req)
+	candidates := s.routeForRequest(ctx, req)
 	if s.selector != nil {
 		candidates = s.selector.Order(req, candidates, false)
 	}

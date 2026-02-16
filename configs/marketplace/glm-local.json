@@ -1,0 +1,34 @@
+{
+  "name": "glm-local",
+  "version": "1.0.0",
+  "description": "GLM Local model integration for running GLM-5 and GLM-4.7 models locally. Provides upstream adapter configuration and routing for local GLM instances.",
+  "author": "CC Gateway Team",
+  "tags": ["model", "glm", "local", "integration"],
+  "source": "builtin.ccgateway",
+  "verified": true,
+  "license": "AGPL-3.0-or-later",
+  "dependencies": [],
+  "skills": [],
+  "hooks": [],
+  "mcp_servers": [],
+  "config_schema": {
+    "glm5_url": {
+      "type": "url",
+      "description": "Base URL for GLM-5 model endpoint",
+      "required": true,
+      "default": "http://127.0.0.1:5025"
+    },
+    "glm47_url": {
+      "type": "url",
+      "description": "Base URL for GLM-4.7 model endpoint",
+      "required": true,
+      "default": "http://127.0.0.1:5022"
+    },
+    "api_key": {
+      "type": "string",
+      "description": "API key for GLM endpoints",
+      "required": false,
+      "default": "free"
+    }
+  }
+}

@@ -1,12 +1,11 @@
 # CC Gateway 项目完整文档（当前实现）
 
-> 更新时间：2026-02-14  
+> 更新时间：2026-02-16  
 > 代码基线：`/Users/sanbo/Desktop/api`
 
 ## 文档说明
 
-当前仓库中没有历史 `docs/*.md` 文件，只有 `README.md`。  
-本文件已将现有说明与代码实现合并为一份统一文档，内容以当前代码行为为准。
+本文档以当前代码行为为准，用于统一说明接口、运行形态、后台能力与迁移边界。
 
 ## 1. 项目定位
 
@@ -30,8 +29,11 @@ CC Gateway 是一个统一 LLM 网关，目标是同时兼容：
   - 探针 Runner（按间隔探测）
   - 运行时设置中心
   - 工具目录与动态策略
+  - 用户服务、令牌服务、渠道能力存储（默认内存）
   - Session / Run / Plan / Todo / Event 内存存储
   - MCP Registry
+  - 插件市场（本地 manifest + 安装统计）
+  - 记忆存储与总结器
   - Run 日志（默认 `logs/run-events.log`）
 - 可选状态持久化：
   - 设置 `STATE_PERSIST_DIR` 后，Run/Plan/Todo 自动加载 + 自动保存
@@ -114,15 +116,38 @@ CC Gateway 是一个统一 LLM 网关，目标是同时兼容：
 - `GET/DELETE /v1/cc/plugins/{name}`
 - `POST /v1/cc/plugins/{name}/enable`
 - `POST /v1/cc/plugins/{name}/disable`
+- `GET /v1/cc/marketplace/plugins`
+- `GET /v1/cc/marketplace/plugins/{name}`
+- `POST /v1/cc/marketplace/plugins/{name}/install`
+- `GET /v1/cc/marketplace/search`
+- `GET /v1/cc/marketplace/updates`
+- `GET /v1/cc/marketplace/recommendations`
 
 ### 4.5 管理接口
 
 - `GET /`（入口文档 + 后台入口）
 - `GET/PUT /admin/settings`
+- `GET/PUT /admin/model-mapping`
+- `GET/PUT /admin/upstream`
+- `GET /admin/capabilities`（模型/渠道能力矩阵与 fallback 诊断）
 - `GET/PUT /admin/tools`
+- `GET /admin/tools/gaps`（工具缺口聚合统计）
+- `GET/PUT/POST /admin/intelligent-dispatch`
 - `GET/PUT /admin/scheduler`
 - `GET/PUT /admin/probe`
+- `POST /admin/bootstrap/apply`
+- `POST /admin/marketplace/cloud/list`
+- `POST /admin/marketplace/cloud/install`
 - `GET /admin/auth/status`
+- `GET/POST /admin/auth/users`
+- `GET/PUT/DELETE /admin/auth/users/{user_id}`
+- `GET/POST /admin/auth/users/{user_id}/tokens`
+- `GET/PUT/DELETE /admin/auth/users/{user_id}/tokens/{token_id}`
+- `GET/POST /admin/auth/users/{user_id}/quota`
+- `GET/POST /admin/channels`
+- `GET/PUT/DELETE /admin/channels/{id}`
+- `PUT /admin/channels/{id}/status`
+- `POST /admin/channels/{id}/test`
 - `GET /admin/status`
 - `GET /admin/`（内置 Dashboard）
 
@@ -143,6 +168,8 @@ CC Gateway 是一个统一 LLM 网关，目标是同时兼容：
 - 子代理生命周期会追加事件：`subagent.created`、`subagent.running`、`subagent.completed`、`subagent.failed`。
 - Team 任务执行会追加事件：`team.task.running`、`team.task.completed`、`team.task.failed`。
 - 插件管理会追加事件：`plugin.installed`、`plugin.enabled`、`plugin.disabled`、`plugin.uninstalled`。
+- Tool Loop 缺口与仿真会追加事件：`tool.gap_detected`、`tool.emulated_call`。
+- 请求解码失败会追加事件：`request.unsupported_fields`、`request.decode_failed`。
 
 ### 5.1 模式（mode）
 
@@ -181,20 +208,80 @@ mode 影响：
 ### 5.4 工具循环（Tool Loop）
 
 - 默认模式：`client_loop`
-- 服务端循环开启条件：`metadata.tool_loop_mode` 为 `server` 或 `server_loop`
+- 服务端循环开启条件：`metadata.tool_loop_mode` 为 `server`、`server_loop`，或直接为 `native/react/json/hybrid`
 - 最大步数：`metadata.tool_loop_max_steps`（默认 4）
+- 仿真模式：`metadata.tool_emulation_mode`（`native|react|json|hybrid`）
+- 规划模型：`metadata.tool_planner_model`（可选）
 
 服务端循环逻辑：
 
-1. 模型返回 `tool_use`
-2. 网关本地工具执行器调用工具
+1. 模型返回 `tool_use`，或在仿真模式下输出可解析的 JSON/ReAct 工具指令
+2. 网关本地工具执行器调用工具（本地未实现时自动尝试 MCP `CallToolAny`）
 3. 结果包装为 `tool_result` 继续喂回模型
-4. 到达 `max_steps` 后停止，`stop_reason` 置为 `max_turns`
+4. 若配置了 `tool_planner_model` 且发生过工具调用，收敛阶段会回到原请求模型生成最终回答
+5. 到达 `max_steps` 后停止，`stop_reason` 置为 `max_turns`
 
 ### 5.5 流式行为
 
 - Anthropic 流式：优先透传上游原始 SSE（含 strict passthrough 语义）
 - OpenAI 流式：将 canonical stream 事件映射为 OpenAI chunk / Responses stream 事件
+
+### 5.6 图形能力降级（Vision Fallback）
+
+当请求包含图片块而上游模型不支持视觉能力时，网关会自动：
+
+1. 调用本地 `image_recognition` 工具获取图片识别信息  
+2. 从消息中移除图片块  
+3. 将识别结果注入文本后继续透传到原上游 API
+
+能力判断优先级：
+
+1. `metadata.upstream_supports_vision`（请求级覆盖）  
+2. 上游 adapter 能力声明 `supports_vision`（来自 `UPSTREAM_ADAPTERS_JSON` / `/admin/upstream`）  
+3. `settings.vision_support_hints`（模型名或通配符）  
+4. 内置启发式（例如 `gpt-3.5-*` 默认视为不支持）
+
+可选请求参数：
+
+- `metadata.vision_fallback_mode`: `off|auto|force`
+
+观测事件：
+
+- `vision.fallback_applied`
+
+### 5.7 鉴权、配额与渠道路由
+
+默认主程序下：
+
+1. `/v1/messages`、`/v1/chat/completions`、`/v1/responses` 与全部 `/v1/cc/*` 接口都经过统一鉴权中间件。
+2. 允许两类凭证：
+   - 管理员令牌（`ADMIN_TOKEN`，可直接通过 `Bearer` 访问）
+   - 用户令牌（由 `/admin/auth/users/{id}/tokens` 生成）
+3. 用户令牌支持：
+   - 模型白名单（`models`）
+   - 客户端 IP 限制（`subnet`）
+   - 配额扣减与回退（按请求 usage 结算）
+4. 若用户归属了 `group`，网关会按 `group + model` 选择渠道，并注入 `routing_adapter_route`。
+
+### 5.8 JSON 解码策略与不支持字段诊断
+
+当前网关统一使用两种解码策略：
+
+1. `decodeJSONBodyStrict`：
+   - 拒绝未知字段
+   - 拒绝 trailing JSON
+   - 主要用于管理接口与 CC 系统接口
+2. `decodeJSONBodySingle`：
+   - 允许未知字段（兼容上游扩展参数）
+   - 拒绝 trailing JSON
+   - 主要用于 Anthropic/OpenAI 兼容入口
+
+当解码失败时，`reportRequestDecodeIssue` 会统一生成诊断并上报：
+
+1. 失败类型：`unsupported_fields` / `trailing_json` / `empty_body` / `invalid_json`
+2. 事件：`request.unsupported_fields` 或 `request.decode_failed`
+3. runlog 字段：`reason`、`unsupported_fields`、`request_body`、`curl_command`
+4. `curl_command` 自动脱敏：`Authorization`、`x-admin-token`、`x-api-key`
 
 ## 6. 路由、调度、裁判、反思
 
@@ -274,6 +361,7 @@ mode 影响：
 默认存储：
 
 - Session/Run/Plan/Todo/Event/MCP 全部为内存实现
+- Auth/Token/Channel 默认也是内存实现
 
 可持久化（当前主程序已接入）：
 
@@ -312,6 +400,7 @@ mode 影响：
 
 - `PORT`（默认 `8080`）
 - `ADMIN_TOKEN`（未设置时默认启用 `admin123456`，可登录但会告警）
+- `ADMIN_UI_DIST_DIR`（后台前端 dist 目录，默认 `web/admin/dist`）
 - `RUN_LOG_PATH`（默认 `logs/run-events.log`）
 - `STATE_PERSIST_DIR`（为空表示不启用持久化）
 - `MOCK_PRIMARY_FAIL`（仅 mock 模式下生效）
@@ -319,6 +408,7 @@ mode 影响：
 ### 10.2 上游与路由
 
 - `UPSTREAM_ADAPTERS_JSON`
+  - adapter 可选字段：`supports_vision: true|false`
 - `UPSTREAM_MODEL_ROUTES_JSON`
 - `UPSTREAM_DEFAULT_ROUTE`
 - `UPSTREAM_TIMEOUT`（默认 `30s`）
@@ -387,8 +477,12 @@ mode 影响：
 | 反思循环 | 是 | 是 | 是 |
 | 智力评估 + 竞选 + 分发 | 是 | 是（按开关） | 是 |
 | Session/Run/Plan/Todo/Event/MCP | 是 | 是 | 是 |
+| 用户/令牌鉴权与额度结算 | 是 | 是 | 是 |
+| 渠道能力路由（group + model） | 是 | 是 | 是 |
 | Run 日志 | 是 | 是 | 是 |
+| 请求解码诊断（unsupported fields/curl） | 是 | 是 | 是 |
 | 状态持久化（Run/Plan/Todo） | 是 | 是（按目录开关） | 是 |
+| 插件市场（本地清单 + 云端安装） | 是 | 是 | 是 |
 | Skills | 是 | 否 | 默认 501 |
 | Eval | 是 | 否 | 默认 501 |
 | Cost Tracking | 是 | 否 | 默认 501 |
@@ -457,8 +551,8 @@ bash scripts/use-glm-local-env.sh
 ## 13. 测试现状
 
 - 测试目录：`tests/`
-- 测试文件：52 个
-- 覆盖包：29 个子目录
+- 测试文件：71 个
+- 覆盖包：34 个子目录
 
 本地执行：
 
@@ -472,11 +566,16 @@ go test ./tests/... -count=1
 
 - `cmd/cc-gateway`：程序入口
 - `internal/gateway`：HTTP handler、协议转换、SSE、admin dashboard
+- `internal/auth`：用户管理与角色/配额元数据
+- `internal/token`：访问令牌、模型/IP 限制、额度扣减
+- `internal/channel`：渠道能力存储与 group/model 路由选择
 - `internal/upstream`：多后端适配器、路由、裁判、分发、反思
 - `internal/scheduler`：健康评分、冷却、配置热更新
 - `internal/probe`：健康探针与智力评测
 - `internal/modelmap`：模型名映射（含通配规则）
 - `internal/settings`：运行时设置中心
+- `internal/marketplace`：插件市场清单、安装与统计
+- `internal/memory`：工作/会话/长期记忆与总结器
 - `internal/policy`：动态策略引擎（结合工具目录）
 - `internal/toolcatalog`：工具登记和状态控制
 - `internal/toolruntime`：本地工具执行 + MCP 回退

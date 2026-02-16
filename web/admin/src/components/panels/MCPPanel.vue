@@ -6,6 +6,24 @@
     </div>
 
     <div class="panel">
+      <div class="panel-head">
+        <strong>{{ tx("作用域状态", "Scope State") }}</strong>
+      </div>
+      <div class="panel-body">
+        <p class="small">
+          {{ tx("当前 MCP 作用域", "Current MCP scope") }}:
+          <span class="mono">{{ scopeLabel }}</span>
+          ·
+          {{ tx("项目", "Project") }}:
+          <span class="mono">{{ projectID }}</span>
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <strong>{{ tx("注册 MCP", "Register MCP") }}</strong>
+      </div>
       <div class="panel-body">
         <div class="grid-3">
           <div class="form-group">
@@ -49,7 +67,7 @@
           </div>
         </div>
         <div class="btn-row">
-          <button class="btn" @click="register">{{ tx("注册 MCP", "Register MCP") }}</button>
+          <button class="btn" @click="register">{{ tx("注册", "Register") }}</button>
         </div>
       </div>
     </div>
@@ -98,7 +116,7 @@
         <strong>{{ tx("MCP 工具预览", "MCP Tools Preview") }}</strong>
       </div>
       <div class="panel-body">
-        <textarea v-model="previewText" readonly style="min-height: 150px" />
+        <textarea v-model="previewText" readonly style="min-height: 170px" />
       </div>
     </div>
   </div>
@@ -124,6 +142,8 @@ const form = reactive({
 
 const servers = ref<any[]>([]);
 const previewText = ref("");
+const scopeLabel = ref("project");
+const projectID = ref("default");
 
 function parseArgs(raw: string): any[] {
   const parsed = JSON.parse(raw || "[]");
@@ -136,6 +156,8 @@ function parseArgs(raw: string): any[] {
 async function load() {
   try {
     const data = await apiRequest<any>("/v1/cc/mcp/servers?limit=200");
+    scopeLabel.value = String(data?.scope || "project");
+    projectID.value = String(data?.project_id || "default");
     servers.value = Array.isArray(data?.data) ? data.data : [];
   } catch (err: any) {
     toast(`${tx("加载 MCP 失败", "Load MCP failed")}: ${err.message || err}`, "err");

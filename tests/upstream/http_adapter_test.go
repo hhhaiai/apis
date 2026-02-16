@@ -174,6 +174,284 @@ func TestHTTPAdapterAnthropic(t *testing.T) {
 	}
 }
 
+func TestHTTPAdapterAnthropicToolChoiceMapping(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		choice, ok := body["tool_choice"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected tool_choice map, got %#v", body["tool_choice"])
+		}
+		if typ, _ := choice["type"].(string); typ != "any" {
+			t.Fatalf("expected anthropic tool_choice any, got %#v", choice["type"])
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"claude-test",
+			"content":[{"type":"text","text":"ok"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "an-tool-choice",
+		Kind:    AdapterKindAnthropic,
+		BaseURL: server.URL,
+		APIKey:  "ant-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	_, err = adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "claude-test",
+		MaxTokens: 128,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hello"},
+		},
+		Tools: []orchestrator.Tool{
+			{Name: "get_weather", InputSchema: map[string]any{"type": "object"}},
+		},
+		Metadata: map[string]any{
+			"tool_choice": "required",
+		},
+		Headers: map[string]string{
+			"anthropic-version": "2023-06-01",
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+}
+
+func TestHTTPAdapterOpenAIToolChoiceMapping(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		choice, ok := body["tool_choice"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected openai tool_choice object, got %#v", body["tool_choice"])
+		}
+		if typ, _ := choice["type"].(string); typ != "function" {
+			t.Fatalf("unexpected openai tool_choice type: %#v", choice["type"])
+		}
+		fn, ok := choice["function"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected function in tool_choice, got %#v", choice["function"])
+		}
+		if name, _ := fn["name"].(string); name != "read_file" {
+			t.Fatalf("unexpected function name: %q", name)
+		}
+
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"gpt-test",
+			"choices":[{"finish_reason":"stop","message":{"content":"ok","tool_calls":[]}}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "oa-tool-choice",
+		Kind:    AdapterKindOpenAI,
+		BaseURL: server.URL,
+		APIKey:  "oa-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	_, err = adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "gpt-test",
+		MaxTokens: 64,
+		Messages: []orchestrator.Message{
+			{Role: "user", Content: "hello"},
+		},
+		Tools: []orchestrator.Tool{
+			{Name: "read_file", InputSchema: map[string]any{"type": "object"}},
+		},
+		Metadata: map[string]any{
+			"tool_choice": map[string]any{
+				"type": "tool",
+				"name": "read_file",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+}
+
+func TestHTTPAdapterAnthropicImageURLMapping(t *testing.T) {
+	const imageData = "aGVsbG8="
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) == 0 {
+			t.Fatalf("expected messages array, got %#v", body["messages"])
+		}
+		msg0, ok := msgs[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected first message object, got %#v", msgs[0])
+		}
+		content, ok := msg0["content"].([]any)
+		if !ok || len(content) < 2 {
+			t.Fatalf("expected multimodal content, got %#v", msg0["content"])
+		}
+		imageBlock, ok := content[1].(map[string]any)
+		if !ok {
+			t.Fatalf("expected image block map, got %#v", content[1])
+		}
+		if typ, _ := imageBlock["type"].(string); typ != "image" {
+			t.Fatalf("expected anthropic image block, got %#v", imageBlock["type"])
+		}
+		source, ok := imageBlock["source"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected image source object, got %#v", imageBlock["source"])
+		}
+		if sourceType, _ := source["type"].(string); sourceType != "base64" {
+			t.Fatalf("expected base64 source type, got %#v", source["type"])
+		}
+		if mediaType, _ := source["media_type"].(string); mediaType != "image/png" {
+			t.Fatalf("unexpected media_type: %q", mediaType)
+		}
+		if data, _ := source["data"].(string); data != imageData {
+			t.Fatalf("unexpected image data: %q", data)
+		}
+
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"claude-test",
+			"content":[{"type":"text","text":"ok"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "an-image",
+		Kind:    AdapterKindAnthropic,
+		BaseURL: server.URL,
+		APIKey:  "ant-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	_, err = adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "claude-test",
+		MaxTokens: 128,
+		Messages: []orchestrator.Message{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type": "text",
+						"text": "describe image",
+					},
+					map[string]any{
+						"type": "image_url",
+						"image_url": map[string]any{
+							"url": "data:image/png;base64," + imageData,
+						},
+					},
+				},
+			},
+		},
+		Headers: map[string]string{
+			"anthropic-version": "2023-06-01",
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+}
+
+func TestHTTPAdapterAnthropicBlocksLocalImageFetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) == 0 {
+			t.Fatalf("expected messages array, got %#v", body["messages"])
+		}
+		msg0, ok := msgs[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected first message object, got %#v", msgs[0])
+		}
+		content, ok := msg0["content"].([]any)
+		if !ok || len(content) < 2 {
+			t.Fatalf("expected multimodal content, got %#v", msg0["content"])
+		}
+		imageBlock, ok := content[1].(map[string]any)
+		if !ok {
+			t.Fatalf("expected image block map, got %#v", content[1])
+		}
+		if typ, _ := imageBlock["type"].(string); typ != "image_url" {
+			t.Fatalf("expected blocked host to remain image_url block, got %#v", imageBlock["type"])
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"claude-test",
+			"content":[{"type":"text","text":"ok"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "an-image-local",
+		Kind:    AdapterKindAnthropic,
+		BaseURL: server.URL,
+		APIKey:  "ant-key",
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	_, err = adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "claude-test",
+		MaxTokens: 128,
+		Messages: []orchestrator.Message{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type": "text",
+						"text": "describe image",
+					},
+					map[string]any{
+						"type": "image_url",
+						"image_url": map[string]any{
+							"url": "http://127.0.0.1:9999/private.png",
+						},
+					},
+				},
+			},
+		},
+		Headers: map[string]string{
+			"anthropic-version": "2023-06-01",
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+}
+
 func TestHTTPAdapterCanonical(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/complete" {

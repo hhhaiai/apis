@@ -1,0 +1,12 @@
+{
+  "name": "dependent-plugin",
+  "version": "1.0.0",
+  "description": "Plugin with dependencies",
+  "author": "Test",
+  "dependencies": [
+    {
+      "name": "missing-dep",
+      "version_constraint": "\u003e=1.0.0"
+    }
+  ]
+}

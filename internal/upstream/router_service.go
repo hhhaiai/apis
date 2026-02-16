@@ -111,7 +111,7 @@ func NewRouterService(cfg RouterConfig, adapters []Adapter) *RouterService {
 }
 
 func (s *RouterService) Complete(ctx context.Context, req orchestrator.Request) (orchestrator.Response, error) {
-	candidates := s.routeForRequest(req)
+	candidates := s.routeForRequest(ctx, req)
 	if s.selector != nil {
 		candidates = s.selector.Order(req, candidates, false)
 	}
@@ -175,7 +175,7 @@ func (s *RouterService) Stream(ctx context.Context, req orchestrator.Request) (<
 		defer close(events)
 		defer close(errs)
 
-		candidates := s.routeForRequest(req)
+		candidates := s.routeForRequest(ctx, req)
 		if s.selector != nil {
 			candidates = s.selector.Order(req, candidates, true)
 		}
@@ -503,7 +503,7 @@ func emitSyntheticStream(events chan<- orchestrator.StreamEvent, resp orchestrat
 	events <- orchestrator.StreamEvent{Type: "message_stop"}
 }
 
-func (s *RouterService) routeForRequest(req orchestrator.Request) []string {
+func (s *RouterService) routeForRequest(ctx context.Context, req orchestrator.Request) []string {
 	if route := routeFromMetadata(req.Metadata); len(route) > 0 {
 		return route
 	}
@@ -511,7 +511,7 @@ func (s *RouterService) routeForRequest(req orchestrator.Request) []string {
 	defer s.mu.RUnlock()
 	// Dispatcher-based routing: if enabled and election is done, use it
 	if s.dispatcher != nil {
-		if dispatched := s.dispatcher.RouteRequest(req, s.adapterOrder); len(dispatched) > 0 {
+		if dispatched := s.dispatcher.RouteRequest(ctx, req, s.adapterOrder); len(dispatched) > 0 {
 			return dispatched
 		}
 	}
@@ -759,4 +759,72 @@ func cloneRoutes(in map[string][]string) map[string][]string {
 		out[k] = append([]string(nil), v...)
 	}
 	return out
+}
+
+// UpdateDispatchConfig updates the dispatcher configuration dynamically.
+func (s *RouterService) UpdateDispatchConfig(enabled bool) error {
+	s.mu.RLock()
+	dispatcher := s.dispatcher
+	s.mu.RUnlock()
+
+	if dispatcher == nil {
+		return fmt.Errorf("dispatcher is not configured")
+	}
+	dispatcher.UpdateConfig(DispatchConfig{Enabled: enabled})
+	return nil
+}
+
+// UpdateDispatchConfigFull updates the dispatcher with full configuration.
+func (s *RouterService) UpdateDispatchConfigFull(cfg DispatchConfig) error {
+	s.mu.RLock()
+	dispatcher := s.dispatcher
+	s.mu.RUnlock()
+
+	if dispatcher == nil {
+		return fmt.Errorf("dispatcher is not configured")
+	}
+	dispatcher.UpdateConfig(cfg)
+	return nil
+}
+
+// GetDispatchStatus returns the current dispatch status for admin API.
+func (s *RouterService) GetDispatchStatus() map[string]any {
+	s.mu.RLock()
+	dispatcher := s.dispatcher
+	s.mu.RUnlock()
+
+	if dispatcher == nil {
+		return map[string]any{
+			"available": false,
+			"reason":    "dispatcher not configured",
+		}
+	}
+
+	return dispatcher.Snapshot()
+}
+
+// TriggerDispatchRerun triggers a manual re-election
+func (s *RouterService) TriggerDispatchRerun() error {
+	s.mu.RLock()
+	dispatcher := s.dispatcher
+	s.mu.RUnlock()
+
+	if dispatcher == nil {
+		return fmt.Errorf("dispatcher is not configured")
+	}
+	dispatcher.RerunElection()
+	return nil
+}
+
+// ResetDispatchStats resets dispatch statistics
+func (s *RouterService) ResetDispatchStats() error {
+	s.mu.RLock()
+	dispatcher := s.dispatcher
+	s.mu.RUnlock()
+
+	if dispatcher == nil {
+		return fmt.Errorf("dispatcher is not configured")
+	}
+	dispatcher.ResetStats()
+	return nil
 }

@@ -148,3 +148,76 @@ func TestCCPluginsNotConfigured(t *testing.T) {
 		t.Fatalf("expected 501, got %d; body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCCPluginsProjectScopeIsolation(t *testing.T) {
+	pluginStore := plugin.NewManager()
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		PluginStore:  pluginStore,
+	})
+
+	createAlpha := httptest.NewRequest(http.MethodPost, "/v1/cc/plugins?scope=project&project_id=alpha", strings.NewReader(`{"name":"planner_pack","version":"1.0.0"}`))
+	rrCreateAlpha := httptest.NewRecorder()
+	router.ServeHTTP(rrCreateAlpha, createAlpha)
+	if rrCreateAlpha.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for alpha create, got %d; body=%s", rrCreateAlpha.Code, rrCreateAlpha.Body.String())
+	}
+
+	createBeta := httptest.NewRequest(http.MethodPost, "/v1/cc/plugins?scope=project&project_id=beta", strings.NewReader(`{"name":"planner_pack","version":"1.0.0"}`))
+	rrCreateBeta := httptest.NewRecorder()
+	router.ServeHTTP(rrCreateBeta, createBeta)
+	if rrCreateBeta.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for beta create, got %d; body=%s", rrCreateBeta.Code, rrCreateBeta.Body.String())
+	}
+
+	listAlpha := httptest.NewRequest(http.MethodGet, "/v1/cc/plugins?scope=project&project_id=alpha", nil)
+	rrListAlpha := httptest.NewRecorder()
+	router.ServeHTTP(rrListAlpha, listAlpha)
+	if rrListAlpha.Code != http.StatusOK {
+		t.Fatalf("expected 200 for alpha list, got %d; body=%s", rrListAlpha.Code, rrListAlpha.Body.String())
+	}
+	var alphaPayload struct {
+		Data []plugin.Plugin `json:"data"`
+	}
+	if err := json.Unmarshal(rrListAlpha.Body.Bytes(), &alphaPayload); err != nil {
+		t.Fatalf("decode alpha payload: %v", err)
+	}
+	if len(alphaPayload.Data) != 1 || alphaPayload.Data[0].Name != "planner_pack" {
+		t.Fatalf("unexpected alpha plugins: %+v", alphaPayload.Data)
+	}
+
+	listGlobal := httptest.NewRequest(http.MethodGet, "/v1/cc/plugins?scope=global", nil)
+	rrListGlobal := httptest.NewRecorder()
+	router.ServeHTTP(rrListGlobal, listGlobal)
+	if rrListGlobal.Code != http.StatusOK {
+		t.Fatalf("expected 200 for global list, got %d; body=%s", rrListGlobal.Code, rrListGlobal.Body.String())
+	}
+	var globalPayload struct {
+		Data []plugin.Plugin `json:"data"`
+	}
+	if err := json.Unmarshal(rrListGlobal.Body.Bytes(), &globalPayload); err != nil {
+		t.Fatalf("decode global payload: %v", err)
+	}
+	if len(globalPayload.Data) != 0 {
+		t.Fatalf("expected no global plugins, got %+v", globalPayload.Data)
+	}
+}
+
+func TestCCPluginsRejectUnknownFieldsOnCreate(t *testing.T) {
+	pluginStore := plugin.NewManager()
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		PluginStore:  pluginStore,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cc/plugins", strings.NewReader(`{"name":"planner_pack","version":"1.0.0","unknown_field":1}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}

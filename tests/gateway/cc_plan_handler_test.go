@@ -265,3 +265,59 @@ func TestCCPlansStepAdvanceAutoComplete(t *testing.T) {
 		t.Fatalf("expected 2 completed todos after execute#3, got %d", completedTodos.Count)
 	}
 }
+
+func TestCCPlansRejectUnknownFieldsOnCreate(t *testing.T) {
+	planStore := plan.NewStore()
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		PlanStore:    planStore,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cc/plans", strings.NewReader(`{"title":"release","session_id":"sess_1","unknown_field":1}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCCPlanApproveAllowsEmptyBodyAndRejectsTrailingJSON(t *testing.T) {
+	planStore := plan.NewStore()
+	created, err := planStore.Create(plan.CreateInput{
+		Title:     "plan",
+		SessionID: "sess_1",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		PlanStore:    planStore,
+	})
+
+	emptyReq := httptest.NewRequest(http.MethodPost, "/v1/cc/plans/"+created.ID+"/approve", nil)
+	emptyRR := httptest.NewRecorder()
+	router.ServeHTTP(emptyRR, emptyReq)
+	if emptyRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 for empty approve body, got %d; body=%s", emptyRR.Code, emptyRR.Body.String())
+	}
+
+	created2, err := planStore.Create(plan.CreateInput{
+		Title:     "plan-2",
+		SessionID: "sess_2",
+	})
+	if err != nil {
+		t.Fatalf("create second plan: %v", err)
+	}
+	trailingReq := httptest.NewRequest(http.MethodPost, "/v1/cc/plans/"+created2.ID+"/approve", strings.NewReader(`{} {}`))
+	trailingRR := httptest.NewRecorder()
+	router.ServeHTTP(trailingRR, trailingReq)
+	if trailingRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing JSON in approve body, got %d; body=%s", trailingRR.Code, trailingRR.Body.String())
+	}
+}

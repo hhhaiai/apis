@@ -212,3 +212,85 @@ func TestCCMCPServersNotConfigured(t *testing.T) {
 		t.Fatalf("expected 501, got %d; body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCCMCPServersRejectUnknownFieldsOnCreate(t *testing.T) {
+	registry := mcpregistry.NewStore(nil)
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		MCPRegistry:  registry,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cc/mcp/servers", strings.NewReader(`{"name":"x","transport":"http","url":"http://127.0.0.1","unknown_field":1}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCCMCPServersProjectScopeIsolation(t *testing.T) {
+	healthyUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      "1",
+			"result": map[string]any{
+				"tools": []map[string]any{
+					{"name": "remote_search"},
+				},
+			},
+		})
+	}))
+	defer healthyUpstream.Close()
+
+	registry := mcpregistry.NewStore(healthyUpstream.Client())
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		MCPRegistry:  registry,
+	})
+
+	body := `{"id":"shared-id","name":"scoped","transport":"http","url":"` + healthyUpstream.URL + `"}`
+	reqAlpha := httptest.NewRequest(http.MethodPost, "/v1/cc/mcp/servers?scope=project&project_id=alpha", strings.NewReader(body))
+	rrAlpha := httptest.NewRecorder()
+	router.ServeHTTP(rrAlpha, reqAlpha)
+	if rrAlpha.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for alpha create, got %d; body=%s", rrAlpha.Code, rrAlpha.Body.String())
+	}
+
+	reqBeta := httptest.NewRequest(http.MethodPost, "/v1/cc/mcp/servers?scope=project&project_id=beta", strings.NewReader(body))
+	rrBeta := httptest.NewRecorder()
+	router.ServeHTTP(rrBeta, reqBeta)
+	if rrBeta.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for beta create, got %d; body=%s", rrBeta.Code, rrBeta.Body.String())
+	}
+
+	listAlpha := httptest.NewRequest(http.MethodGet, "/v1/cc/mcp/servers?scope=project&project_id=alpha", nil)
+	rrListAlpha := httptest.NewRecorder()
+	router.ServeHTTP(rrListAlpha, listAlpha)
+	if rrListAlpha.Code != http.StatusOK {
+		t.Fatalf("expected 200 for alpha list, got %d; body=%s", rrListAlpha.Code, rrListAlpha.Body.String())
+	}
+	var alphaPayload struct {
+		Data []mcpregistry.Server `json:"data"`
+	}
+	if err := json.Unmarshal(rrListAlpha.Body.Bytes(), &alphaPayload); err != nil {
+		t.Fatalf("decode alpha list: %v", err)
+	}
+	if len(alphaPayload.Data) != 1 || alphaPayload.Data[0].ID != "shared-id" {
+		t.Fatalf("unexpected alpha servers: %+v", alphaPayload.Data)
+	}
+
+	getWrongScope := httptest.NewRequest(http.MethodGet, "/v1/cc/mcp/servers/shared-id?scope=project&project_id=gamma", nil)
+	rrGetWrongScope := httptest.NewRecorder()
+	router.ServeHTTP(rrGetWrongScope, getWrongScope)
+	if rrGetWrongScope.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for wrong project scope, got %d; body=%s", rrGetWrongScope.Code, rrGetWrongScope.Body.String())
+	}
+}

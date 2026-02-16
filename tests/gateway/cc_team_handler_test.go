@@ -290,3 +290,20 @@ func TestCCTeamTaskLifecycleEventsForSync(t *testing.T) {
 		t.Fatalf("expected completed lifecycle event for team_sync, got %+v", listResp.Data)
 	}
 }
+
+func TestCCTeamsRejectUnknownFieldsOnCreate(t *testing.T) {
+	teamStore := agentteam.NewStore(nil)
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		TeamStore:    teamStore,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cc/teams", strings.NewReader(`{"id":"team_x","name":"X","unknown_field":1}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}

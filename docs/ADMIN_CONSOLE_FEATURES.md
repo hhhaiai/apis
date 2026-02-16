@@ -1,87 +1,90 @@
 # 后台功能清单（Admin Console）
 
-更新时间：2026-02-14  
+更新时间：2026-02-16  
 后台入口：`/admin/`
 
-## 1. 入口与鉴权
+## 1. 登录与鉴权
 
-1. 首页入口：`/`（文档介绍 + 后台入口）
-2. 后台鉴权状态：`GET /admin/auth/status`
-3. 默认后台密码：`admin123456`
-4. 若未自定义 `ADMIN_TOKEN`，系统允许登录但持续告警
+1. 鉴权探测：`GET /admin/auth/status`
+2. 管理接口鉴权：支持 `x-admin-token` 或 `Authorization: Bearer <token>`
+3. 默认管理员口令：`admin123456`（仅开发便利，生产需替换）
+4. 若仍使用默认口令，登录页与顶部会显示安全警告
 
-## 2. 后台模块总览
+## 2. 后台模块总览（Vue 控制台）
 
-后台页面采用 Vue + Vite，按模块分为：
-
-1. Overview（系统总览）
-2. Settings（运行时设置）
-3. Models（模型路由）
-4. Tools（工具目录）
-5. Plugins（插件中心）
-6. MCP（MCP 服务管理）
-7. Agent Teams（团队与任务协作）
-8. Subagents（子代理管理）
-9. Events（事件流与审计）
-10. Todos（任务看板）
-11. Plans（计划编排）
-12. Skills（技能管理）
-13. Rules（本地规则草稿）
-14. Cost（成本追踪）
-15. Eval（智能评估）
-
-## 3. 各模块能力映射
+当前页面模块：
 
 1. Overview
-   - 系统健康、调度器状态、关键运行参数
 2. Settings
-   - 反思轮次、超时、并行候选、重试、工具循环、模式路由
-3. Models
-   - mode -> model 覆写、mode route chain 展示
-4. Tools
-   - 工具目录查看（类别、启用状态）
-5. Plugins
-   - 插件安装、启停、删除、详情查看
-6. MCP
-   - 服务注册、健康检查、重连、工具列表预览、删除
-7. Agent Teams
-   - 团队创建、任务创建、任务列表、一键 orchestrate
-8. Subagents
-   - 查询、终止、删除、时间线查看
-9. Events
-   - 事件查询 + SSE 流式订阅（支持过滤）
-10. Todos
-    - 创建、列表、状态更新、详情查看
-11. Plans
-    - 创建、审批、执行推进、详情及关联 Todo
-12. Skills
-    - 注册、列表、删除
-13. Rules
-    - 本地草稿规则维护（后端规则 API 预留）
-14. Cost
-    - 总成本、预算、模型维度成本统计
-15. Eval
-    - 评测输入、打分结果、分析文本
+3. Intelligent Dispatch
+4. Scheduler
+5. Models
+6. Tools
+7. Plugins
+8. MCP
+9. Bootstrap
+10. Channels
+11. Auth（用户与令牌）
+12. Teams
+13. Subagents
+14. Events
+15. Todos
+16. Plans
+17. Skills
+18. Rules
+19. Cost
+20. Eval
 
-## 4. 多语言支持
+## 3. 核心能力映射
 
-后台支持中英文双语切换：
+1. 路由与模型：`/admin/settings`、`/admin/model-mapping`、`/admin/upstream`
+2. 调度与探针：`/admin/intelligent-dispatch`、`/admin/scheduler`、`/admin/probe`
+3. 工具治理：`/admin/tools`、`/admin/tools/gaps`、`/admin/capabilities`
+4. 插件与市场：`/v1/cc/plugins*`、`/v1/cc/marketplace*`、`/admin/marketplace/cloud/*`
+5. MCP 管理：`/v1/cc/mcp/servers*`
+6. 组织协作：`/v1/cc/teams*`、`/v1/cc/subagents*`、`/v1/cc/plans*`、`/v1/cc/todos*`
+7. 用户与令牌：
+   - `GET/POST /admin/auth/users`
+   - `GET/PUT/DELETE /admin/auth/users/{user_id}`
+   - `GET/POST /admin/auth/users/{user_id}/tokens`
+   - `GET/PUT/DELETE /admin/auth/users/{user_id}/tokens/{token_id}`
+   - `GET/POST /admin/auth/users/{user_id}/quota`
+8. 渠道管理：
+   - `GET/POST /admin/channels`
+   - `GET/PUT/DELETE /admin/channels/{id}`
+   - `PUT /admin/channels/{id}/status`
+   - `POST /admin/channels/{id}/test`
 
-1. 登录页与导航支持中英切换
-2. 各功能面板标题、按钮、空状态、主要错误提示均支持中英展示
-3. 语言状态会持久化到浏览器本地（`cc_admin_lang`）
+## 4. 事件与诊断可视化（新增）
 
-说明：
+Events 面板支持以下诊断事件：
 
-1. API 返回字段名保持协议原样（如 `run_id` / `event_type`），不做本地化改写
-2. 技术字段与路径保持英文，保证与协议/日志一致
+1. `request.unsupported_fields`
+2. `request.decode_failed`
 
-## 5. 日志与记录文本（Record Text）
+诊断列可直接查看：
 
-为支持高并发任务同步与审计，系统在事件数据中保留文本记录：
+1. 不支持字段列表（`unsupported_fields`）
+2. 失败原因（`reason`）
+3. 请求参数原文（`request_body`）
+4. 复现命令（`curl_command`，敏感 token 已脱敏）
 
-1. 子代理生命周期事件包含 `record_text`
-2. Team 任务生命周期事件包含 `record_text`
-3. 事件流可通过 `/v1/cc/events` 与 `/v1/cc/events/stream` 查询/订阅
+这套信息同时来自事件流与 runlog，便于排障闭环。
 
-这部分可以作为多任务同步与追踪的统一文本依据。
+## 5. 作用域与项目隔离
+
+后台支持 `project/global` 两级作用域：
+
+1. Header：`x-project-id`
+2. Query：`scope=project|global` + `project_id=<id>`
+3. `plugins / mcp / tools` 默认按项目隔离，`global` 可做全局策略
+
+## 6. UI 运行模式
+
+1. 优先加载 `web/admin/dist`（可由 `ADMIN_UI_DIST_DIR` 覆盖）。
+2. 若 dist 缺失，自动回退内置页面 `internal/gateway/static/dashboard.html`。
+
+## 7. 多语言与显示约束
+
+1. 控制台支持中英文切换，语言保存在 `cc_admin_lang`。
+2. 协议字段保持英文原名（如 `run_id`、`event_type`），避免审计歧义。

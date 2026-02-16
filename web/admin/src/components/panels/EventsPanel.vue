@@ -33,11 +33,12 @@
             <th>{{ tx("团队", "Team") }}</th>
             <th>{{ tx("子代理", "Subagent") }}</th>
             <th>{{ tx("记录", "Record") }}</th>
+            <th>{{ tx("诊断", "Diagnostics") }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="items.length === 0">
-            <td colspan="5" class="small">{{ tx("暂无事件", "No events") }}</td>
+            <td colspan="6" class="small">{{ tx("暂无事件", "No events") }}</td>
           </tr>
           <tr v-for="item in items" :key="item.id">
             <td class="mono">{{ item.created_at || "—" }}</td>
@@ -45,6 +46,21 @@
             <td class="mono">{{ item.team_id || item?.data?.team_id || "—" }}</td>
             <td class="mono">{{ item.subagent_id || item?.data?.subagent_id || "—" }}</td>
             <td class="small">{{ item?.data?.record_text || "—" }}</td>
+            <td class="small">
+              <div v-if="unsupportedFieldsText(item)">{{ tx("不支持字段", "Unsupported Fields") }}: {{ unsupportedFieldsText(item) }}</div>
+              <details v-if="item?.data?.curl_command || item?.data?.request_body || item?.data?.reason">
+                <summary>{{ tx("查看详情", "View Details") }}</summary>
+                <div v-if="item?.data?.reason">{{ tx("原因", "Reason") }}: {{ item.data.reason }}</div>
+                <div v-if="item?.data?.request_body">
+                  <div>{{ tx("请求参数", "Request Body") }}:</div>
+                  <pre class="mono">{{ item.data.request_body }}</pre>
+                </div>
+                <div v-if="item?.data?.curl_command">
+                  <div>{{ tx("复现命令", "Repro Curl") }}:</div>
+                  <pre class="mono">{{ item.data.curl_command }}</pre>
+                </div>
+              </details>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -72,6 +88,17 @@ const filter = reactive({
 
 const items = ref<any[]>([]);
 let source: EventSource | null = null;
+
+function unsupportedFieldsText(item: any): string {
+  const list = item?.data?.unsupported_fields;
+  if (!Array.isArray(list) || list.length === 0) {
+    return "";
+  }
+  return list
+    .map((v) => String(v || "").trim())
+    .filter(Boolean)
+    .join(", ");
+}
 
 function buildQuery(includeLimit = true): URLSearchParams {
   const q = new URLSearchParams();
@@ -147,7 +174,9 @@ function startStream() {
     "plugin.installed",
     "plugin.enabled",
     "plugin.disabled",
-    "plugin.uninstalled"
+    "plugin.uninstalled",
+    "request.unsupported_fields",
+    "request.decode_failed"
   ];
 
   if (filter.eventType.trim()) {

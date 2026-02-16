@@ -85,6 +85,13 @@ func (s *server) applyRoutingPolicy(mode string, metadata map[string]any) map[st
 	out["enable_response_judge"] = cfg.Routing.EnableResponseJudge
 	out["tool_loop_mode"] = cfg.ToolLoop.Mode
 	out["tool_loop_max_steps"] = cfg.ToolLoop.MaxSteps
+	out["tool_emulation_mode"] = cfg.ToolLoop.EmulationMode
+	if len(cfg.ToolAliases) > 0 {
+		out["tool_aliases"] = cfg.ToolAliases
+	}
+	if strings.TrimSpace(cfg.ToolLoop.PlannerModel) != "" {
+		out["tool_planner_model"] = cfg.ToolLoop.PlannerModel
+	}
 	if route := s.settings.ModeRoute(mode); len(route) > 0 {
 		out["routing_adapter_route"] = route
 	}

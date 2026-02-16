@@ -127,3 +127,45 @@ func TestCCSessionsNotConfigured(t *testing.T) {
 		t.Fatalf("expected 501, got %d; body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCCSessionsRejectUnknownFieldsOnCreate(t *testing.T) {
+	st := session.NewStore()
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		SessionStore: st,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cc/sessions", strings.NewReader(`{"title":"workspace","unknown_field":1}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCCSessionForkRejectTrailingJSON(t *testing.T) {
+	st := session.NewStore()
+	parent, err := st.Create(session.CreateInput{
+		ID:    "sess_parent_2",
+		Title: "parent",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		SessionStore: st,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cc/sessions/"+parent.ID+"/fork", strings.NewReader(`{"title":"child"} {}`))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing JSON, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}

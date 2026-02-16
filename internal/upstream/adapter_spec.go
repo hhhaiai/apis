@@ -10,6 +10,8 @@ import (
 type AdapterSpec struct {
 	Name               string            `json:"name"`
 	Kind               AdapterKind       `json:"kind"`
+	SupportsVision     *bool             `json:"supports_vision,omitempty"`
+	SupportsTools      *bool             `json:"supports_tools,omitempty"`
 	BaseURL            string            `json:"base_url,omitempty"`
 	Endpoint           string            `json:"endpoint,omitempty"`
 	APIKey             string            `json:"api_key,omitempty"`
@@ -77,6 +79,8 @@ func BuildAdapterFromSpec(spec AdapterSpec) (Adapter, error) {
 			Env:            copyHeaders(spec.Env),
 			WorkDir:        spec.WorkDir,
 			Model:          spec.Model,
+			SupportsVision: cloneBoolPtr(spec.SupportsVision),
+			SupportsTools:  cloneBoolPtr(spec.SupportsTools),
 			TimeoutMS:      spec.TimeoutMS,
 			MaxOutputBytes: spec.MaxOutputBytes,
 		})
@@ -95,6 +99,8 @@ func BuildAdapterFromSpec(spec AdapterSpec) (Adapter, error) {
 			Model:              spec.Model,
 			UserAgent:          spec.UserAgent,
 			APIKeyHeader:       spec.APIKeyHeader,
+			SupportsVision:     cloneBoolPtr(spec.SupportsVision),
+			SupportsTools:      cloneBoolPtr(spec.SupportsTools),
 			ForceStream:        spec.ForceStream,
 			StreamOptions:      copyAnyMap(spec.StreamOptions),
 			InsecureSkipVerify: spec.InsecureSkipVerify,
@@ -108,6 +114,8 @@ func sanitizeAdapterSpec(in AdapterSpec) AdapterSpec {
 	out := in
 	out.Name = strings.TrimSpace(in.Name)
 	out.Kind = AdapterKind(strings.TrimSpace(string(in.Kind)))
+	out.SupportsVision = cloneBoolPtr(in.SupportsVision)
+	out.SupportsTools = cloneBoolPtr(in.SupportsTools)
 	out.BaseURL = strings.TrimSpace(in.BaseURL)
 	out.Endpoint = strings.TrimSpace(in.Endpoint)
 	out.APIKey = strings.TrimSpace(in.APIKey)
@@ -148,4 +156,12 @@ func cleanModelRoutes(routes map[string][]string) map[string][]string {
 		out[model] = cleanRoute(route)
 	}
 	return out
+}
+
+func cloneBoolPtr(in *bool) *bool {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
 }

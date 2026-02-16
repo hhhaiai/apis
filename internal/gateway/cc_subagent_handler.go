@@ -3,7 +3,6 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -136,11 +135,10 @@ func (s *server) handleCCSubagentTerminate(w http.ResponseWriter, r *http.Reques
 		By     string `json:"by"`
 		Reason string `json:"reason"`
 	}
-	if r != nil && r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
-			return
-		}
+	if err := decodeJSONBodyStrict(r, &req, true); err != nil {
+		s.reportRequestDecodeIssue(r, err)
+		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
+		return
 	}
 	out, err := s.subagentStore.TerminateWithMeta(id, req.By, req.Reason)
 	if err != nil {
@@ -258,11 +256,10 @@ func (s *server) handleCCSubagentDelete(w http.ResponseWriter, r *http.Request, 
 		By     string `json:"by"`
 		Reason string `json:"reason"`
 	}
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-			s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
-			return
-		}
+	if err := decodeJSONBodyStrict(r, &req, true); err != nil {
+		s.reportRequestDecodeIssue(r, err)
+		s.writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
+		return
 	}
 	out, err := s.subagentStore.Delete(id, req.By, req.Reason)
 	if err != nil {

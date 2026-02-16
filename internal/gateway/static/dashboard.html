@@ -97,11 +97,34 @@
   /* JSON editor */
   .json-editor { font-family:'JetBrains Mono','Fira Code',monospace; font-size:12px; min-height:200px; }
 
+  /* Admin auth bar */
+  .auth-bar {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:12px;
+    margin-bottom:18px;
+    padding:12px 14px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+  }
+  .auth-summary { min-width:260px; }
+  .auth-summary .title { font-size:12px; color:var(--text2); text-transform:uppercase; letter-spacing:.6px; margin-bottom:4px; }
+  .auth-summary .status { font-size:13px; color:var(--text); }
+  .auth-summary .status-ok { color:var(--green); }
+  .auth-summary .status-err { color:var(--red); }
+  .auth-summary .status-warn { color:var(--orange); }
+  .auth-controls { display:flex; align-items:center; gap:8px; width:min(700px,100%); }
+  .auth-controls input { min-width:220px; font-family:monospace; }
+
   /* Responsive */
   @media(max-width:768px) {
     .sidebar { width:60px; } .sidebar h1,.sidebar .version,.nav-item span:not(.icon) { display:none; }
     .main { margin-left:60px; padding:16px; }
     .cards { grid-template-columns:1fr; }
+    .auth-bar { flex-direction:column; align-items:stretch; }
+    .auth-controls { flex-wrap:wrap; }
   }
 
   /* Animations */
@@ -122,6 +145,7 @@
     <div class="nav-item" data-tab="tools"><span class="icon">🧰</span><span>Tools</span></div>
     <div class="nav-item" data-tab="plugins"><span class="icon">🧩</span><span>Plugins</span></div>
     <div class="nav-item" data-tab="mcp"><span class="icon">🔌</span><span>MCP</span></div>
+    <div class="nav-item" data-tab="bootstrap"><span class="icon">📦</span><span>Bootstrap</span></div>
     <div class="nav-item" data-tab="teams"><span class="icon">👥</span><span>Agent Teams</span></div>
     <div class="nav-item" data-tab="subagents"><span class="icon">🤝</span><span>Subagents</span></div>
     <div class="nav-item" data-tab="events"><span class="icon">📡</span><span>Events</span></div>
@@ -133,6 +157,25 @@
     <div class="nav-item" data-tab="eval"><span class="icon">🧠</span><span>Eval</span></div>
   </nav>
   <main class="main">
+    <div class="auth-bar">
+      <div class="auth-summary">
+        <div class="title">Admin Access</div>
+        <div id="auth-status-text" class="status">Checking authentication status...</div>
+      </div>
+      <div class="auth-controls">
+        <input type="text" id="admin-token-input" placeholder="Set admin token (ADMIN_TOKEN)">
+        <input type="text" id="project-id-input" placeholder="Project ID (default)">
+        <select id="scope-select" style="max-width:130px">
+          <option value="project">Project Scope</option>
+          <option value="global">Global Scope</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="saveAdminToken()">Save</button>
+        <button class="btn btn-outline btn-sm" onclick="saveProjectScope()">Apply Scope</button>
+        <button class="btn btn-outline btn-sm" onclick="clearAdminToken()">Clear</button>
+        <button class="btn btn-outline btn-sm" onclick="checkAdminAuthAndReload()">Check</button>
+      </div>
+    </div>
+
     <!-- OVERVIEW -->
     <section id="sec-overview" class="section active">
       <div class="page-header"><h2>System Overview</h2><span class="badge badge-green" id="health-badge">● Healthy</span></div>
@@ -196,6 +239,23 @@
           </div>
         </div>
         <textarea id="upstream-admin-json" class="json-editor" style="min-height:220px"></textarea>
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+          <div style="font-size:12px;color:var(--text2);margin-bottom:10px">Quick Add Adapter</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px">
+            <div class="form-group"><label>Name</label><input type="text" id="qa-name" placeholder="openai-main"></div>
+            <div class="form-group"><label>Kind</label><select id="qa-kind"><option value="openai">openai</option><option value="anthropic">anthropic</option><option value="gemini">gemini</option><option value="canonical">canonical</option><option value="script">script</option></select></div>
+            <div class="form-group"><label>Model</label><input type="text" id="qa-model" placeholder="gpt-4o"></div>
+            <div class="form-group"><label>Base URL</label><input type="text" id="qa-base-url" placeholder="https://api.openai.com/v1"></div>
+            <div class="form-group"><label>API Key Env</label><input type="text" id="qa-api-key-env" placeholder="OPENAI_API_KEY"></div>
+            <div class="form-group"><label>Supports Tools</label><select id="qa-tools"><option value="true">true</option><option value="false">false</option><option value="">unknown</option></select></div>
+            <div class="form-group"><label>Supports Vision</label><select id="qa-vision"><option value="true">true</option><option value="false">false</option><option value="">unknown</option></select></div>
+            <div class="form-group"><label>Script Command</label><input type="text" id="qa-command" placeholder="python3"></div>
+            <div class="form-group" style="grid-column:span 4"><label>Script Args (JSON array)</label><input type="text" id="qa-args" placeholder='["adapter.py"]'></div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-outline btn-sm" onclick="addQuickAdapter()">Add To JSON</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -233,6 +293,20 @@
         <div class="panel-head" style="padding:0 0 12px 0;border-bottom:none"><h3>Plugin Detail</h3></div>
         <textarea id="plugin-preview" class="json-editor" style="min-height:140px" readonly></textarea>
       </div>
+      <div class="panel" style="padding:20px">
+        <div class="panel-head" style="padding:0 0 12px 0;border-bottom:none">
+          <h3>Cloud Marketplace (Select & Install)</h3>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-outline btn-sm" onclick="loadMarketplacePlugins()">Refresh</button>
+            <button class="btn btn-primary btn-sm" onclick="installCheckedMarketplace()">Install Selected</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:10px">
+          <input type="text" id="cloud-source-url" placeholder="Cloud manifest URL (optional, JSON array)">
+          <button class="btn btn-outline btn-sm" onclick="loadMarketplacePlugins(true)">Load Cloud</button>
+        </div>
+        <div id="marketplace-list" style="display:grid;gap:8px"></div>
+      </div>
     </section>
 
     <!-- MCP -->
@@ -257,6 +331,21 @@
       <div class="panel" style="padding:20px">
         <div class="panel-head" style="padding:0 0 12px 0;border-bottom:none"><h3>MCP Tools Preview</h3></div>
         <textarea id="mcp-tools-preview" class="json-editor" style="min-height:140px" readonly></textarea>
+      </div>
+    </section>
+
+    <!-- BOOTSTRAP -->
+    <section id="sec-bootstrap" class="section">
+      <div class="page-header"><h2>Config Bootstrap</h2></div>
+      <div class="panel" style="padding:20px">
+        <div class="panel-head" style="padding:0 0 12px 0;border-bottom:none">
+          <h3>Apply JSON Config (Tools / Plugins / MCP / Upstream)</h3>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-outline btn-sm" onclick="loadBootstrapTemplate()">Load Template</button>
+            <button class="btn btn-primary btn-sm" onclick="applyBootstrapConfig()">Apply Config</button>
+          </div>
+        </div>
+        <textarea id="bootstrap-config" class="json-editor" style="min-height:260px"></textarea>
       </div>
     </section>
 
@@ -335,7 +424,7 @@
         </div>
       </div>
       <div class="panel">
-        <table><thead><tr><th>Time</th><th>Type</th><th>Team</th><th>Subagent</th><th>Record</th></tr></thead><tbody id="event-tbody"></tbody></table>
+        <table><thead><tr><th>Time</th><th>Type</th><th>Team</th><th>Subagent</th><th>Record</th><th>Diagnostics</th></tr></thead><tbody id="event-tbody"></tbody></table>
       </div>
     </section>
 
@@ -473,8 +562,126 @@
 
 <script>
 const BASE = '';
-const adminToken = localStorage.getItem('cc_admin_token') || '';
-const headers = ()=>{ const h={'Content-Type':'application/json'}; if(adminToken) h['x-admin-token']=adminToken; return h; };
+let adminToken = localStorage.getItem('cc_admin_token') || '';
+let projectId = normalizeProjectID(localStorage.getItem('cc_project_id') || 'default');
+let scopeMode = (localStorage.getItem('cc_scope') || 'project').toLowerCase()==='global'?'global':'project';
+let adminAuthState = { auth_required: false, default_token_enabled: false, token_provided: false, token_valid: true };
+const headers = ()=>{
+  const h={'Content-Type':'application/json'};
+  if(adminToken){
+    h['x-admin-token']=adminToken;
+    h['Authorization']='Bearer '+adminToken;
+  }
+  if(projectId){
+    h['x-project-id']=projectId;
+  }
+  return h;
+};
+function normalizeProjectID(raw){
+  raw=(raw||'').toLowerCase().trim();
+  if(!raw) return 'default';
+  const v=raw.replace(/[^a-z0-9._-]/g,'').slice(0,64);
+  return v || 'default';
+}
+function withScope(path){
+  const url=new URL(path,window.location.origin);
+  url.searchParams.set('scope',scopeMode);
+  url.searchParams.set('project_id',projectId);
+  return url.pathname+url.search;
+}
+function setAuthStatus(text,level){
+  const el=document.getElementById('auth-status-text');
+  if(!el) return;
+  el.className='status'+(level==='ok'?' status-ok':level==='err'?' status-err':level==='warn'?' status-warn':'');
+  el.textContent=text;
+}
+function refreshScopeInputs(){
+  const p=document.getElementById('project-id-input');
+  if(p) p.value=projectId;
+  const s=document.getElementById('scope-select');
+  if(s) s.value=scopeMode;
+}
+function renderOverviewLocked(){
+  document.getElementById('overview-cards').innerHTML=
+    '<div class="card"><div class="label">Admin Access</div><div class="value" style="font-size:20px;color:var(--orange)">Token Required</div><div class="sub">Set admin token above to enable dashboard actions.</div></div>';
+  document.getElementById('adapter-tbody').innerHTML='<tr><td colspan="5" style="color:var(--text2)">Authenticate to load adapter status</td></tr>';
+}
+function setAdminToken(token){
+  adminToken=(token||'').trim();
+  if(adminToken) localStorage.setItem('cc_admin_token',adminToken);
+  else localStorage.removeItem('cc_admin_token');
+  const input=document.getElementById('admin-token-input');
+  if(input) input.value=adminToken;
+}
+function saveProjectScope(){
+  const p=document.getElementById('project-id-input');
+  const s=document.getElementById('scope-select');
+  projectId=normalizeProjectID(p?p.value:'default');
+  scopeMode=(s&&s.value==='global')?'global':'project';
+  localStorage.setItem('cc_project_id',projectId);
+  localStorage.setItem('cc_scope',scopeMode);
+  refreshScopeInputs();
+  toast('Scope applied: '+scopeMode+' / '+projectId);
+  checkAdminAuthAndReload();
+}
+async function checkAdminAuth(opts={}){
+  const toastOnSuccess=opts.toastOnSuccess!==false;
+  try{
+    const resp=await fetch(BASE+'/admin/auth/status',{headers:headers()});
+    if(!resp.ok){
+      const raw=await resp.text();
+      throw new Error(raw||('HTTP '+resp.status));
+    }
+    adminAuthState=await resp.json();
+    if(!adminAuthState.auth_required){
+      setAuthStatus('Admin authentication is disabled. Dashboard APIs are open.','ok');
+      if(toastOnSuccess) toast('Admin auth not required');
+      return true;
+    }
+    if(!adminToken){
+      let msg='Admin token is required. Set token to enable full dashboard actions.';
+      if(adminAuthState.default_token_enabled) msg+=' Default token is still enabled on server.';
+      setAuthStatus(msg,'warn');
+      if(toastOnSuccess) toast('Admin token required',false);
+      return false;
+    }
+    if(adminAuthState.token_valid){
+      setAuthStatus('Admin token verified. All dashboard actions are available.','ok');
+      if(toastOnSuccess) toast('Admin token verified');
+      return true;
+    }
+    setAuthStatus('Admin token is invalid. Update token and retry.','err');
+    if(toastOnSuccess) toast('Admin token invalid',false);
+    return false;
+  }catch(e){
+    setAuthStatus('Cannot verify admin auth: '+e.message,'err');
+    if(toastOnSuccess) toast('Auth check failed: '+e.message,false);
+    return false;
+  }
+}
+function saveAdminToken(){
+  const input=document.getElementById('admin-token-input');
+  setAdminToken(input?input.value:'');
+  checkAdminAuthAndReload();
+}
+async function clearAdminToken(){
+  setAdminToken('');
+  const ok=await checkAdminAuth({toastOnSuccess:false});
+  if(ok){
+    loadOverview();
+  }else{
+    renderOverviewLocked();
+  }
+  toast('Admin token cleared');
+}
+async function checkAdminAuthAndReload(){
+  const ok=await checkAdminAuth();
+  if(ok){
+    loadOverview();
+    return;
+  }
+  renderOverviewLocked();
+}
 
 // Navigation
 document.querySelectorAll('.nav-item').forEach(el=>{
@@ -490,6 +697,7 @@ document.querySelectorAll('.nav-item').forEach(el=>{
       tools: loadTools,
       plugins: loadPlugins,
       mcp: loadMCPServers,
+      bootstrap: loadBootstrapTemplate,
       teams: loadTeams,
       subagents: loadSubagents,
       events: loadEvents,
@@ -508,7 +716,18 @@ function toast(msg,ok=true){ const t=document.getElementById('toast'); t.classNa
 async function api(path,opts={}){
   try{
     const r=await fetch(BASE+path,{headers:headers(),...opts});
-    if(!r.ok) throw new Error(await r.text());
+    if(!r.ok){
+      const raw=await r.text();
+      let message=raw||('HTTP '+r.status);
+      try{
+        const parsed=JSON.parse(raw);
+        message=parsed?.error?.message||parsed?.message||message;
+      }catch(e){}
+      if(r.status===401){
+        setAuthStatus('Unauthorized request. Check admin token value.','err');
+      }
+      throw new Error(message);
+    }
     if(r.status===204) return {};
     return r.json();
   }catch(e){ toast(e.message,false); throw e; }
@@ -532,6 +751,7 @@ async function loadOverview(){
       {label:'Parallel Candidates',value:s.routing?.parallel_candidates||1,sub:'per request'},
       {label:'Tool Loop',value:s.tool_loop?.mode||'client_loop',sub:'max '+( s.tool_loop?.max_steps||4)+' steps'},
       {label:'Timeout',value:((s.routing?.timeout_ms||30000)/1000)+'s',sub:'per upstream call'},
+      {label:'Active Scope',value:scopeMode,sub:'project '+projectId},
     ];
     document.getElementById('overview-cards').innerHTML=cards.map(c=>`<div class="card"><div class="label">${c.label}</div><div class="value">${c.value}</div><div class="sub">${c.sub}</div></div>`).join('');
 
@@ -638,10 +858,47 @@ async function saveUpstreamAdmin(){
   }
 }
 
+function parseOptionalBool(v){
+  v=(v||'').trim().toLowerCase();
+  if(v==='true') return true;
+  if(v==='false') return false;
+  return undefined;
+}
+
+function addQuickAdapter(){
+  try{
+    const textarea=document.getElementById('upstream-admin-json');
+    const cfg=JSON.parse(textarea.value||'{}');
+    if(!Array.isArray(cfg.adapters)) cfg.adapters=[];
+    const kind=(document.getElementById('qa-kind').value||'openai').trim();
+    const adapter={
+      name:(document.getElementById('qa-name').value||'').trim(),
+      kind,
+      model:(document.getElementById('qa-model').value||'').trim(),
+      supports_tools:parseOptionalBool(document.getElementById('qa-tools').value),
+      supports_vision:parseOptionalBool(document.getElementById('qa-vision').value),
+    };
+    if(kind==='script'){
+      adapter.command=(document.getElementById('qa-command').value||'').trim();
+      const argsRaw=(document.getElementById('qa-args').value||'').trim();
+      if(argsRaw) adapter.args=JSON.parse(argsRaw);
+    }else{
+      adapter.base_url=(document.getElementById('qa-base-url').value||'').trim();
+      adapter.api_key_env=(document.getElementById('qa-api-key-env').value||'').trim();
+    }
+    if(!adapter.name){ toast('adapter name is required',false); return; }
+    cfg.adapters.push(adapter);
+    textarea.value=JSON.stringify(cfg,null,2);
+    toast('Adapter added to JSON editor');
+  }catch(e){
+    toast('Failed to add adapter: '+e.message,false);
+  }
+}
+
 // TOOLS
 async function loadTools(){
   try{
-    const d=await api('/admin/tools');
+    const d=await api(withScope('/admin/tools'));
     const tools=d.tools||[];
     document.getElementById('tools-tbody').innerHTML=tools.length?tools.map(t=>`<tr>
       <td style="font-family:monospace">${t.name}</td>
@@ -663,9 +920,10 @@ function parseJSONArrayInput(text,label){
 }
 
 // PLUGINS
+let marketplaceSelected=new Set();
 async function loadPlugins(){
   try{
-    const d=await api('/v1/cc/plugins?limit=200');
+    const d=await api(withScope('/v1/cc/plugins?limit=200'));
     const items=d.data||[];
     document.getElementById('plugin-tbody').innerHTML=items.length?items.map(p=>`<tr>
       <td style="font-family:monospace">${p.name}</td>
@@ -681,6 +939,7 @@ async function loadPlugins(){
         <button class="btn btn-danger btn-sm" onclick="deletePluginByKey('${enc(p.name)}')">Delete</button>
       </td>
     </tr>`).join(''):'<tr><td colspan="7" style="color:var(--text2)">No plugins installed</td></tr>';
+    loadMarketplacePlugins();
   }catch(e){}
 }
 
@@ -695,7 +954,7 @@ async function installPlugin(){
       mcp_servers:parseJSONArrayInput(document.getElementById('plugin-mcp').value,'mcp_servers'),
     };
     if(!body.name){ toast('plugin name is required',false); return; }
-    const d=await api('/v1/cc/plugins',{method:'POST',body:JSON.stringify(body)});
+    const d=await api(withScope('/v1/cc/plugins'),{method:'POST',body:JSON.stringify(body)});
     document.getElementById('plugin-preview').value=JSON.stringify(d,null,2);
     toast('Plugin installed');
     loadPlugins();
@@ -705,7 +964,7 @@ async function installPlugin(){
 async function viewPluginByKey(key){
   const name=dec(key);
   try{
-    const d=await api('/v1/cc/plugins/'+enc(name));
+    const d=await api(withScope('/v1/cc/plugins/'+enc(name)));
     document.getElementById('plugin-preview').value=JSON.stringify(d,null,2);
   }catch(e){}
 }
@@ -713,7 +972,7 @@ async function viewPluginByKey(key){
 async function enablePluginByKey(key){
   const name=dec(key);
   try{
-    const d=await api('/v1/cc/plugins/'+enc(name)+'/enable',{method:'POST',body:'{}'});
+    const d=await api(withScope('/v1/cc/plugins/'+enc(name)+'/enable'),{method:'POST',body:'{}'});
     document.getElementById('plugin-preview').value=JSON.stringify(d,null,2);
     toast('Plugin enabled');
     loadPlugins();
@@ -723,7 +982,7 @@ async function enablePluginByKey(key){
 async function disablePluginByKey(key){
   const name=dec(key);
   try{
-    const d=await api('/v1/cc/plugins/'+enc(name)+'/disable',{method:'POST',body:'{}'});
+    const d=await api(withScope('/v1/cc/plugins/'+enc(name)+'/disable'),{method:'POST',body:'{}'});
     document.getElementById('plugin-preview').value=JSON.stringify(d,null,2);
     toast('Plugin disabled');
     loadPlugins();
@@ -734,11 +993,77 @@ async function deletePluginByKey(key){
   const name=dec(key);
   if(!confirm('Delete plugin '+name+' ?')) return;
   try{
-    await api('/v1/cc/plugins/'+enc(name),{method:'DELETE'});
+    await api(withScope('/v1/cc/plugins/'+enc(name)),{method:'DELETE'});
     document.getElementById('plugin-preview').value='';
     toast('Plugin deleted');
     loadPlugins();
   }catch(e){}
+}
+
+async function loadMarketplacePlugins(forceCloud=false){
+  try{
+    const cloudUrl=(document.getElementById('cloud-source-url')?.value||'').trim();
+    let marketData={data:[]};
+    if(cloudUrl || forceCloud){
+      marketData=await api('/admin/marketplace/cloud/list',{method:'POST',body:JSON.stringify({url:cloudUrl})}).catch(()=>({data:[]}));
+    }else{
+      marketData=await api('/v1/cc/marketplace/plugins').catch(()=>({data:[]}));
+    }
+    const installedData=await api(withScope('/v1/cc/plugins?limit=500')).catch(()=>({data:[]}));
+    const manifests=marketData.data||[];
+    const installedSet=new Set((installedData.data||[]).map(p=>String(p.name||'')));
+    const container=document.getElementById('marketplace-list');
+    if(!container) return;
+    container.innerHTML=manifests.length?manifests.map(m=>{
+      const checked=marketplaceSelected.has(m.name)?'checked':'';
+      const installed=installedSet.has(m.name);
+      return `<label style="display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--surface2)">
+        <input type="checkbox" ${checked} ${installed?'disabled':''} onchange="toggleMarketplacePlugin('${enc(m.name)}',this.checked)">
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">${m.name} <span style="font-family:monospace;color:var(--text2)">v${m.version||'latest'}</span> ${installed?'<span class="badge badge-green">Installed</span>':''}</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px">${m.description||''}</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:4px">${(m.tags||[]).join(', ')}</div>
+        </div>
+      </label>`;
+    }).join(''):'<div style="color:var(--text2)">No cloud plugins available</div>';
+  }catch(e){}
+}
+
+function toggleMarketplacePlugin(encodedName,checked){
+  const name=dec(encodedName);
+  if(checked) marketplaceSelected.add(name);
+  else marketplaceSelected.delete(name);
+}
+
+async function installCheckedMarketplace(){
+  const names=Array.from(marketplaceSelected.values());
+  if(!names.length){ toast('Select plugins first',false); return; }
+  const cloudUrl=(document.getElementById('cloud-source-url')?.value||'').trim();
+  if(cloudUrl){
+    try{
+      const out=await api('/admin/marketplace/cloud/install',{method:'POST',body:JSON.stringify({
+        url:cloudUrl,
+        names,
+        scope:scopeMode,
+        project_id:projectId
+      })});
+      const installed=out.installed||[];
+      installed.forEach(name=>marketplaceSelected.delete(name));
+      toast('Cloud install finished: '+installed.length+'/'+names.length);
+      loadPlugins();
+      return;
+    }catch(e){}
+  }
+  let ok=0;
+  for(const name of names){
+    try{
+      await api(withScope('/v1/cc/marketplace/plugins/'+enc(name)+'/install'),{method:'POST',body:'{}'});
+      ok++;
+      marketplaceSelected.delete(name);
+    }catch(e){}
+  }
+  toast('Marketplace install finished: '+ok+'/'+names.length);
+  loadPlugins();
 }
 
 function parseJSONArray(text){
@@ -752,7 +1077,7 @@ function parseJSONArray(text){
 // MCP
 async function loadMCPServers(){
   try{
-    const d=await api('/v1/cc/mcp/servers?limit=200');
+    const d=await api(withScope('/v1/cc/mcp/servers?limit=200'));
     const items=d.data||[];
     document.getElementById('mcp-tbody').innerHTML=items.length?items.map(s=>`<tr>
       <td style="font-family:monospace">${s.id}</td>
@@ -786,25 +1111,25 @@ async function registerMCPServer(){
       body.command=(document.getElementById('mcp-command').value||'').trim();
       body.args=parseJSONArray(document.getElementById('mcp-args').value);
     }
-    await api('/v1/cc/mcp/servers',{method:'POST',body:JSON.stringify(body)});
+    await api(withScope('/v1/cc/mcp/servers'),{method:'POST',body:JSON.stringify(body)});
     toast('MCP server registered');
     loadMCPServers();
   }catch(e){ toast('Register MCP failed: '+e.message,false); }
 }
 
 async function mcpHealth(id){
-  try{ await api('/v1/cc/mcp/servers/'+encodeURIComponent(id)+'/health',{method:'POST',body:'{}'}); toast('Health check done'); loadMCPServers(); }catch(e){}
+  try{ await api(withScope('/v1/cc/mcp/servers/'+encodeURIComponent(id)+'/health'),{method:'POST',body:'{}'}); toast('Health check done'); loadMCPServers(); }catch(e){}
 }
 async function mcpReconnect(id){
-  try{ await api('/v1/cc/mcp/servers/'+encodeURIComponent(id)+'/reconnect',{method:'POST',body:'{}'}); toast('Reconnect done'); loadMCPServers(); }catch(e){}
+  try{ await api(withScope('/v1/cc/mcp/servers/'+encodeURIComponent(id)+'/reconnect'),{method:'POST',body:'{}'}); toast('Reconnect done'); loadMCPServers(); }catch(e){}
 }
 async function mcpDelete(id){
   if(!confirm('Delete MCP server '+id+' ?')) return;
-  try{ await api('/v1/cc/mcp/servers/'+encodeURIComponent(id),{method:'DELETE'}); toast('MCP server deleted'); loadMCPServers(); document.getElementById('mcp-tools-preview').value=''; }catch(e){}
+  try{ await api(withScope('/v1/cc/mcp/servers/'+encodeURIComponent(id)),{method:'DELETE'}); toast('MCP server deleted'); loadMCPServers(); document.getElementById('mcp-tools-preview').value=''; }catch(e){}
 }
 async function mcpListTools(id){
   try{
-    const d=await api('/v1/cc/mcp/servers/'+encodeURIComponent(id)+'/tools/list',{method:'POST',body:'{}'});
+    const d=await api(withScope('/v1/cc/mcp/servers/'+encodeURIComponent(id)+'/tools/list'),{method:'POST',body:'{}'});
     document.getElementById('mcp-tools-preview').value=JSON.stringify(d,null,2);
   }catch(e){}
 }
@@ -955,17 +1280,49 @@ function buildEventQuery(){
   return q;
 }
 
+function escapeHtml(text){
+  return String(text||'')
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;')
+    .replaceAll("'",'&#39;');
+}
+
 function renderEvents(items,prepend=false){
   const tbody=document.getElementById('event-tbody');
+  const unsupportedText=(ev)=>{
+    const list=Array.isArray(ev?.data?.unsupported_fields)?ev.data.unsupported_fields:[];
+    return list.map(item=>String(item||'').trim()).filter(Boolean).join(', ');
+  };
+  const renderDiagnostics=(ev)=>{
+    const parts=[];
+    const unsupported=unsupportedText(ev);
+    if(unsupported){
+      parts.push(`<div style="font-size:12px;color:var(--warn)">unsupported: ${unsupported}</div>`);
+    }
+    const reason=String(ev?.data?.reason||'').trim();
+    const body=String(ev?.data?.request_body||'').trim();
+    const curl=String(ev?.data?.curl_command||'').trim();
+    if(reason||body||curl){
+      const detailItems=[];
+      if(reason) detailItems.push(`<div><strong>reason:</strong> ${escapeHtml(reason)}</div>`);
+      if(body) detailItems.push(`<div><strong>request body:</strong><pre style="white-space:pre-wrap;word-break:break-word;margin-top:6px">${escapeHtml(body)}</pre></div>`);
+      if(curl) detailItems.push(`<div><strong>curl:</strong><pre style="white-space:pre-wrap;word-break:break-word;margin-top:6px">${escapeHtml(curl)}</pre></div>`);
+      parts.push(`<details><summary style="cursor:pointer">details</summary>${detailItems.join('')}</details>`);
+    }
+    return parts.join('')||'—';
+  };
   const rows=(items||[]).map(ev=>`<tr>
     <td style="font-family:monospace;font-size:12px">${ev.created_at||'—'}</td>
     <td>${ev.event_type||'—'}</td>
     <td style="font-family:monospace">${ev.team_id||ev.data?.team_id||'—'}</td>
     <td style="font-family:monospace">${ev.subagent_id||ev.data?.subagent_id||'—'}</td>
     <td style="font-size:12px;color:var(--text2)">${ev.data?.record_text||'—'}</td>
+    <td style="font-size:12px;color:var(--text2)">${renderDiagnostics(ev)}</td>
   </tr>`).join('');
   if(prepend) tbody.innerHTML=rows+tbody.innerHTML;
-  else tbody.innerHTML=rows||'<tr><td colspan="5" style="color:var(--text2)">No events</td></tr>';
+  else tbody.innerHTML=rows||'<tr><td colspan="6" style="color:var(--text2)">No events</td></tr>';
 }
 
 async function loadEvents(){
@@ -981,6 +1338,10 @@ function startEventStream(){
   const q=buildEventQuery();
   const eventType=(q.get('event_type')||'').trim();
   q.delete('limit');
+  q.set('project_id',projectId);
+  if(adminToken){
+    q.set('token',adminToken);
+  }
   const url=BASE+'/v1/cc/events/stream?'+q.toString();
   const es=new EventSource(url);
   eventStreamSource=es;
@@ -997,6 +1358,7 @@ function startEventStream(){
     'team.created','team.agent.added','team.task.created','team.task.running','team.task.completed','team.task.failed','team.message.sent','team.orchestrated',
     'subagent.created','subagent.running','subagent.completed','subagent.failed','subagent.terminated','subagent.deleted',
     'plugin.installed','plugin.enabled','plugin.disabled','plugin.uninstalled',
+    'request.unsupported_fields','request.decode_failed',
   ];
   if(eventType){
     es.addEventListener(eventType,onData);
@@ -1250,6 +1612,34 @@ function addRule(){
 }
 function removeRule(i){localRules.splice(i,1);renderRules();}
 
+// BOOTSTRAP
+async function loadBootstrapTemplate(){
+  try{
+    const d=await api('/admin/bootstrap/apply');
+    d.scope=scopeMode;
+    d.project_id=projectId;
+    document.getElementById('bootstrap-config').value=JSON.stringify(d,null,2);
+  }catch(e){}
+}
+
+async function applyBootstrapConfig(){
+  try{
+    const raw=document.getElementById('bootstrap-config').value||'{}';
+    const body=JSON.parse(raw);
+    body.scope=scopeMode;
+    body.project_id=projectId;
+    const out=await api(withScope('/admin/bootstrap/apply'),{method:'POST',body:JSON.stringify(body)});
+    document.getElementById('bootstrap-config').value=JSON.stringify(out,null,2);
+    if(out.ok) toast('Bootstrap applied');
+    else toast('Bootstrap applied with warnings',false);
+    loadTools();
+    loadPlugins();
+    loadMCPServers();
+  }catch(e){
+    toast('Apply bootstrap failed: '+e.message,false);
+  }
+}
+
 // COST
 async function loadCost(){
   try{
@@ -1293,7 +1683,17 @@ async function runEval(){
 }
 
 // Init
-loadOverview();
+async function initDashboard(){
+  setAdminToken(adminToken);
+  refreshScopeInputs();
+  const ready=await checkAdminAuth({toastOnSuccess:false});
+  if(ready){
+    loadOverview();
+    return;
+  }
+  renderOverviewLocked();
+}
+initDashboard();
 </script>
 </body>
 </html>
