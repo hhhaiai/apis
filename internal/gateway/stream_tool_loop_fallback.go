@@ -266,12 +266,10 @@ func (s *server) streamOpenAIResponsesWithToolLoop(w http.ResponseWriter, r *htt
 
 	respID := s.nextID("resp")
 	created := time.Now().Unix()
-	createdEvt := map[string]any{
-		"type":    "response.created",
-		"id":      respID,
-		"model":   outwardModel,
-		"created": created,
-	}
+	itemID := "msg_" + respID
+	textItemStarted := false
+	var generated strings.Builder
+	createdEvt := openAIResponseCreatedEvent(respID, outwardModel, created)
 	rawCreated, _ := json.Marshal(createdEvt)
 	if err := writeOpenAISSEData(w, string(rawCreated)); err != nil {
 		return "", usage
@@ -285,16 +283,29 @@ func (s *server) streamOpenAIResponsesWithToolLoop(w http.ResponseWriter, r *htt
 		return "", usage
 	}
 
-	for _, block := range resp.Blocks {
+	for i, block := range resp.Blocks {
 		switch block.Type {
 		case "text":
 			if block.Text == "" {
 				continue
 			}
+			if !textItemStarted {
+				for _, startItem := range openAIResponseTextStartEvents(itemID) {
+					raw, _ := json.Marshal(startItem)
+					if err := writeOpenAISSEData(w, string(raw)); err != nil {
+						return collectResponseText(resp), resp.Usage
+					}
+				}
+				textItemStarted = true
+			}
+			generated.WriteString(block.Text)
 			item := map[string]any{
-				"type":        "response.output_text.delta",
-				"response_id": respID,
-				"delta":       block.Text,
+				"type":          "response.output_text.delta",
+				"response_id":   respID,
+				"item_id":       itemID,
+				"output_index":  0,
+				"content_index": 0,
+				"delta":         block.Text,
 			}
 			raw, _ := json.Marshal(item)
 			if err := writeOpenAISSEData(w, string(raw)); err != nil {
@@ -302,26 +313,44 @@ func (s *server) streamOpenAIResponsesWithToolLoop(w http.ResponseWriter, r *htt
 			}
 			flusher.Flush()
 		case "tool_use":
+			call := newOpenAIResponseFunctionCallState(respID, orchestrator.StreamEvent{
+				Type:  "content_block_start",
+				Index: i,
+				Block: block,
+			})
+			rawAdded, _ := json.Marshal(openAIResponseFunctionCallAddedEvent(call))
+			if err := writeOpenAISSEData(w, string(rawAdded)); err != nil {
+				return collectResponseText(resp), resp.Usage
+			}
 			args, _ := json.Marshal(block.Input)
+			call.Arguments.WriteString(string(args))
 			item := map[string]any{
-				"type":        "response.function_call_arguments.delta",
-				"response_id": respID,
-				"delta":       string(args),
+				"type":         "response.function_call_arguments.delta",
+				"response_id":  respID,
+				"item_id":      call.ItemID,
+				"call_id":      call.CallID,
+				"output_index": call.OutputIndex,
+				"delta":        string(args),
 			}
 			raw, _ := json.Marshal(item)
 			if err := writeOpenAISSEData(w, string(raw)); err != nil {
+				return collectResponseText(resp), resp.Usage
+			}
+			rawDone, _ := json.Marshal(openAIResponseFunctionCallDoneEvent(call))
+			if err := writeOpenAISSEData(w, string(rawDone)); err != nil {
 				return collectResponseText(resp), resp.Usage
 			}
 			flusher.Flush()
 		}
 	}
 
-	completed := map[string]any{
-		"type":    "response.completed",
-		"id":      respID,
-		"model":   outwardModel,
-		"created": created,
+	if textItemStarted {
+		for _, item := range openAIResponseTextDoneEvents(respID, itemID, generated.String()) {
+			raw, _ := json.Marshal(item)
+			_ = writeOpenAISSEData(w, string(raw))
+		}
 	}
+	completed := openAIResponseCompletedEvent(respID, outwardModel, created, generated.String(), resp.Usage)
 	rawCompleted, _ := json.Marshal(completed)
 	_ = writeOpenAISSEData(w, string(rawCompleted))
 	_ = writeOpenAISSEData(w, "[DONE]")

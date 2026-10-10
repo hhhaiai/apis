@@ -72,6 +72,48 @@ func TestHTTPAdapterOpenAI(t *testing.T) {
 	}
 }
 
+func TestHTTPAdapterOpenAIForwardsResponseFormat(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		responseFormat, ok := body["response_format"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected response_format in upstream body, got %#v", body["response_format"])
+		}
+		if responseFormat["type"] != "json_object" {
+			t.Fatalf("unexpected response_format: %#v", responseFormat)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"mapped-model",
+			"choices":[{"finish_reason":"stop","message":{"content":"{\"summary\":\"ok\",\"intent\":\"test\"}"}}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewHTTPAdapter(HTTPAdapterConfig{
+		Name:    "oa-json",
+		Kind:    AdapterKindOpenAI,
+		BaseURL: server.URL,
+	}, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	_, err = adapter.Complete(context.Background(), orchestrator.Request{
+		Model:     "mapped-model",
+		MaxTokens: 64,
+		Messages:  []orchestrator.Message{{Role: "user", Content: "json"}},
+		Metadata:  map[string]any{"response_format": map[string]any{"type": "json_object"}},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+}
+
 func TestHTTPAdapterOpenAIForceStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")

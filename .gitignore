@@ -2,3 +2,5 @@ web/admin/node_modules/
 web/admin/dist/
 logs/*
 !logs/.gitkeep
+.omx/
+__pycache__/

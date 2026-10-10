@@ -250,11 +250,19 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRootHome)
 	mux.HandleFunc("/home", s.handleRootHome)
+	mux.HandleFunc("/admin", s.handleRootHome)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	// Messages API - Authenticated & Quota Managed
 	mux.HandleFunc("/v1/messages", s.withAuth(s.withTokenQuota(s.handleMessages)))
 	mux.HandleFunc("/v1/messages/count_tokens", s.withAuth(s.handleCountTokens))
+	mux.HandleFunc("/v1/models", s.withAuth(s.handleOpenAIModels))
+	mux.HandleFunc("/v1/models/", s.withAuth(s.handleOpenAIModelByPath))
 	mux.HandleFunc("/v1/chat/completions", s.withAuth(s.withTokenQuota(s.handleOpenAIChatCompletions)))
+	// Groq SDK hard-codes /openai/v1/... paths even when baseURL is overridden.
+	// Keep this alias so OpenAI/Groq-compatible clients can point at the gateway root.
+	mux.HandleFunc("/openai/v1/models", s.withAuth(s.handleOpenAIModels))
+	mux.HandleFunc("/openai/v1/models/", s.withAuth(s.handleOpenAIModelByPath))
+	mux.HandleFunc("/openai/v1/chat/completions", s.withAuth(s.withTokenQuota(s.handleOpenAIChatCompletions)))
 	mux.HandleFunc("/v1/responses", s.withAuth(s.withTokenQuota(s.handleOpenAIResponses)))
 
 	// CC System API - Authenticated

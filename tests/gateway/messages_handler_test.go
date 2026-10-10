@@ -383,6 +383,31 @@ func TestMessagesRequireTokenWhenTokenServiceConfiguredWithoutAdminToken(t *test
 	}
 }
 
+func TestMessagesAuthAcceptsAnthropicXAPIKey(t *testing.T) {
+	router := newTestRouterWithDeps(t, Dependencies{
+		Orchestrator: orchestrator.NewSimpleService(),
+		Policy:       policy.NewNoopEngine(),
+		ModelMapper:  modelmap.NewIdentityMapper(),
+		AdminToken:   DefaultAdminToken,
+	})
+
+	body := `{
+		"model":"claude-test",
+		"max_tokens":64,
+		"messages":[{"role":"user","content":"hello"}]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("x-api-key", DefaultAdminToken)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200 with x-api-key, got %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestMessagesTokenIPRestriction(t *testing.T) {
 	tokenSvc := token.NewInMemoryService()
 	tk, err := tokenSvc.Generate("user-ip-restrict", 100)

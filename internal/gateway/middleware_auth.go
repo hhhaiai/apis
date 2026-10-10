@@ -20,16 +20,7 @@ const (
 func (s *server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 1. Check for Admin Token (Backwards Compatibility & Admin Routes).
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			// Try query param for simple file access or websocket.
-			authHeader = r.URL.Query().Get("token")
-			if authHeader != "" {
-				authHeader = "Bearer " + authHeader
-			}
-		}
-
-		tokenStr := bearerToken(authHeader)
+		tokenStr := requestAuthToken(r)
 		adminToken := strings.TrimSpace(s.adminToken)
 		if adminToken != "" && tokenStr == adminToken {
 			next(w, r)
@@ -58,6 +49,21 @@ func (s *server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		// 3. Unauthorized.
 		s.writeError(w, http.StatusUnauthorized, "auth_error", "invalid authentication credentials")
 	}
+}
+
+func requestAuthToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	authHeader := r.Header.Get("Authorization")
+	if token := bearerToken(authHeader); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(r.Header.Get("x-api-key")); token != "" {
+		return token
+	}
+	// Try query param for simple file access or websocket.
+	return strings.TrimSpace(r.URL.Query().Get("token"))
 }
 
 // withTokenQuota performs a pre-check to block obviously exhausted tokens.

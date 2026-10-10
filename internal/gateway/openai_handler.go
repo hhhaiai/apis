@@ -494,12 +494,10 @@ func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, r
 
 	respID := s.nextID("resp")
 	created := time.Now().Unix()
-	createdEvt := map[string]any{
-		"type":    "response.created",
-		"id":      respID,
-		"model":   outwardModel,
-		"created": created,
-	}
+	itemID := "msg_" + respID
+	textItemStarted := false
+	var activeTool *openAIResponseFunctionCallState
+	createdEvt := openAIResponseCreatedEvent(respID, outwardModel, created)
 	rawCreated, _ := json.Marshal(createdEvt)
 	_ = writeOpenAISSEData(w, string(rawCreated))
 	flusher.Flush()
@@ -509,12 +507,18 @@ func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, r
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				completed := map[string]any{
-					"type":    "response.completed",
-					"id":      respID,
-					"model":   outwardModel,
-					"created": created,
+				if activeTool != nil {
+					raw, _ := json.Marshal(openAIResponseFunctionCallDoneEvent(activeTool))
+					_ = writeOpenAISSEData(w, string(raw))
+					activeTool = nil
 				}
+				if textItemStarted {
+					for _, item := range openAIResponseTextDoneEvents(respID, itemID, generated.String()) {
+						raw, _ := json.Marshal(item)
+						_ = writeOpenAISSEData(w, string(raw))
+					}
+				}
+				completed := openAIResponseCompletedEvent(respID, outwardModel, created, generated.String(), usage)
 				raw, _ := json.Marshal(completed)
 				_ = writeOpenAISSEData(w, string(raw))
 				_ = writeOpenAISSEData(w, "[DONE]")
@@ -525,7 +529,50 @@ func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, r
 			if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
 				usage = ev.Usage
 			}
-			item := openAIResponseStreamEvent(respID, ev)
+			if ev.Type == "content_block_start" && ev.Block.Type == "tool_use" {
+				activeTool = newOpenAIResponseFunctionCallState(respID, ev)
+				raw, _ := json.Marshal(openAIResponseFunctionCallAddedEvent(activeTool))
+				if err := writeOpenAISSEData(w, string(raw)); err != nil {
+					return generated.String(), usage
+				}
+				flusher.Flush()
+				continue
+			}
+			if ev.Type == "content_block_delta" && ev.DeltaJSON != "" {
+				if activeTool == nil {
+					activeTool = newOpenAIResponseFunctionCallState(respID, ev)
+					raw, _ := json.Marshal(openAIResponseFunctionCallAddedEvent(activeTool))
+					if err := writeOpenAISSEData(w, string(raw)); err != nil {
+						return generated.String(), usage
+					}
+				}
+				activeTool.Arguments.WriteString(ev.DeltaJSON)
+				raw, _ := json.Marshal(openAIResponseFunctionCallArgumentsDeltaEvent(respID, activeTool, ev.DeltaJSON))
+				if err := writeOpenAISSEData(w, string(raw)); err != nil {
+					return generated.String(), usage
+				}
+				flusher.Flush()
+				continue
+			}
+			if ev.Type == "content_block_stop" && activeTool != nil {
+				raw, _ := json.Marshal(openAIResponseFunctionCallDoneEvent(activeTool))
+				if err := writeOpenAISSEData(w, string(raw)); err != nil {
+					return generated.String(), usage
+				}
+				activeTool = nil
+				flusher.Flush()
+				continue
+			}
+			if ev.Type == "content_block_delta" && ev.DeltaText != "" && !textItemStarted {
+				for _, startItem := range openAIResponseTextStartEvents(itemID) {
+					raw, _ := json.Marshal(startItem)
+					if err := writeOpenAISSEData(w, string(raw)); err != nil {
+						return generated.String(), usage
+					}
+				}
+				textItemStarted = true
+			}
+			item := openAIResponseStreamEvent(respID, itemID, ev)
 			if item == nil {
 				continue
 			}
@@ -538,7 +585,11 @@ func (s *server) streamOpenAIResponses(w http.ResponseWriter, r *http.Request, r
 			if !ok || err == nil {
 				continue
 			}
+			failed := openAIResponseFailedEvent(respID, outwardModel, created, err)
+			raw, _ := json.Marshal(failed)
+			_ = writeOpenAISSEData(w, string(raw))
 			_ = writeOpenAISSEData(w, fmt.Sprintf(`{"type":"error","error":{"message":%q}}`, err.Error()))
+			_ = writeOpenAISSEData(w, "[DONE]")
 			flusher.Flush()
 			return generated.String(), usage
 		case <-r.Context().Done():
@@ -556,6 +607,9 @@ func openAIChatToMessagesRequest(req OpenAIChatCompletionsRequest) (MessagesRequ
 	}
 
 	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = req.MaxCompletionTokens
+	}
 	if maxTokens <= 0 {
 		maxTokens = 1024
 	}
@@ -575,16 +629,9 @@ func openAIChatToMessagesRequest(req OpenAIChatCompletionsRequest) (MessagesRequ
 	if len(msgs) == 0 {
 		return MessagesRequest{}, fmt.Errorf("messages must include at least one non-system message")
 	}
-	tools := make([]ToolDefinition, 0, len(req.Tools))
-	for _, t := range req.Tools {
-		if t.Type != "" && t.Type != "function" {
-			return MessagesRequest{}, fmt.Errorf("unsupported tool type %q", t.Type)
-		}
-		tools = append(tools, ToolDefinition{
-			Name:        t.Function.Name,
-			Description: t.Function.Description,
-			InputSchema: t.Function.Parameters,
-		})
+	tools, err := openAIToolsToToolDefinitions(req.Tools)
+	if err != nil {
+		return MessagesRequest{}, err
 	}
 
 	var system any
@@ -602,7 +649,7 @@ func openAIChatToMessagesRequest(req OpenAIChatCompletionsRequest) (MessagesRequ
 		ToolChoice:  req.ToolChoice,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
-		Metadata:    mergeMetadata(req.Metadata, req.StreamOptions),
+		Metadata:    mergeChatMetadata(req),
 	}, nil
 }
 
@@ -740,29 +787,96 @@ func openAIResponsesToMessagesRequest(req OpenAIResponsesRequest) (MessagesReque
 		maxTokens = 1024
 	}
 
-	tools := make([]ToolDefinition, 0, len(req.Tools))
-	for _, t := range req.Tools {
-		if t.Type != "" && t.Type != "function" {
-			return MessagesRequest{}, fmt.Errorf("unsupported tool type %q", t.Type)
-		}
-		tools = append(tools, ToolDefinition{
-			Name:        t.Function.Name,
-			Description: t.Function.Description,
-			InputSchema: t.Function.Parameters,
-		})
+	tools, err := openAIToolsToToolDefinitions(req.Tools)
+	if err != nil {
+		return MessagesRequest{}, err
 	}
+	metadata := mergeResponsesMetadata(req)
 
 	return MessagesRequest{
 		Model:       req.Model,
 		MaxTokens:   maxTokens,
+		System:      req.Instructions,
 		Messages:    msgs,
 		Stream:      req.Stream,
 		Tools:       tools,
 		ToolChoice:  req.ToolChoice,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
-		Metadata:    mergeMetadata(req.Metadata, req.StreamOptions),
+		Metadata:    metadata,
 	}, nil
+}
+
+func openAIToolsToToolDefinitions(openAITools []OpenAIChatTool) ([]ToolDefinition, error) {
+	tools := make([]ToolDefinition, 0, len(openAITools))
+	for _, t := range openAITools {
+		toolType := strings.ToLower(strings.TrimSpace(t.Type))
+		switch toolType {
+		case "", "function":
+			name := strings.TrimSpace(t.Function.Name)
+			description := t.Function.Description
+			parameters := t.Function.Parameters
+			if name == "" {
+				name = t.Name
+				description = t.Description
+				parameters = t.Parameters
+			}
+			tools = append(tools, ToolDefinition{
+				Name:        name,
+				Description: description,
+				InputSchema: ensureObjectSchema(parameters),
+			})
+		case "namespace":
+			namespace := strings.TrimSpace(t.Name)
+			for _, child := range t.Tools {
+				childType := strings.ToLower(strings.TrimSpace(child.Type))
+				if childType != "" && childType != "function" {
+					return nil, fmt.Errorf("unsupported namespace tool type %q", child.Type)
+				}
+				description := strings.TrimSpace(child.Description)
+				if description == "" {
+					description = strings.TrimSpace(t.Description)
+				} else if nsDesc := strings.TrimSpace(t.Description); nsDesc != "" {
+					description = nsDesc + "\n\n" + description
+				}
+				tools = append(tools, ToolDefinition{
+					Name:        openAINamespaceToolName(namespace, child.Name),
+					Description: description,
+					InputSchema: ensureObjectSchema(child.Parameters),
+				})
+			}
+		case "web_search":
+			// Codex sends Responses-native service tools such as web_search.
+			// The local gateway cannot execute OpenAI service-side tools itself, so
+			// do not expose them as Anthropic function tools to upstream adapters.
+			continue
+		default:
+			return nil, fmt.Errorf("unsupported tool type %q", t.Type)
+		}
+	}
+	return tools, nil
+}
+
+func openAINamespaceToolName(namespace, name string) string {
+	namespace = strings.TrimSpace(namespace)
+	name = strings.TrimSpace(name)
+	if namespace == "" {
+		return name
+	}
+	if strings.HasSuffix(namespace, "_") || strings.HasPrefix(name, "_") {
+		return namespace + name
+	}
+	return namespace + "__" + name
+}
+
+func ensureObjectSchema(schema map[string]any) map[string]any {
+	if schema != nil {
+		return schema
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
 }
 
 func mergeMetadata(metadata map[string]any, streamOptions map[string]any) map[string]any {
@@ -772,6 +886,79 @@ func mergeMetadata(metadata map[string]any, streamOptions map[string]any) map[st
 	}
 	if len(streamOptions) > 0 {
 		out["stream_options"] = streamOptions
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeChatMetadata(req OpenAIChatCompletionsRequest) map[string]any {
+	out := mergeMetadata(req.Metadata, req.StreamOptions)
+	if out == nil {
+		out = map[string]any{}
+	}
+	if req.ResponseFormat != nil {
+		out["response_format"] = req.ResponseFormat
+	}
+	if req.MaxCompletionTokens > 0 {
+		out["max_completion_tokens"] = req.MaxCompletionTokens
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeResponsesMetadata(req OpenAIResponsesRequest) map[string]any {
+	out := mergeMetadata(req.Metadata, req.StreamOptions)
+	if out == nil {
+		out = map[string]any{}
+	}
+	if strings.TrimSpace(req.PreviousResponseID) != "" {
+		out["previous_response_id"] = req.PreviousResponseID
+	}
+	if len(req.Reasoning) > 0 {
+		out["reasoning"] = req.Reasoning
+	}
+	if len(req.Text) > 0 {
+		out["text"] = req.Text
+	}
+	if req.ParallelToolCalls != nil {
+		out["parallel_tool_calls"] = *req.ParallelToolCalls
+	}
+	if req.Store != nil {
+		out["store"] = *req.Store
+	}
+	if len(req.Include) > 0 {
+		out["include"] = req.Include
+	}
+	if strings.TrimSpace(req.Truncation) != "" {
+		out["truncation"] = req.Truncation
+	}
+	if strings.TrimSpace(req.ServiceTier) != "" {
+		out["service_tier"] = req.ServiceTier
+	}
+	if strings.TrimSpace(req.PromptCacheKey) != "" {
+		out["prompt_cache_key"] = req.PromptCacheKey
+	}
+	if strings.TrimSpace(req.SafetyIdentifier) != "" {
+		out["safety_identifier"] = req.SafetyIdentifier
+	}
+	if req.TopLogprobs != nil {
+		out["top_logprobs"] = *req.TopLogprobs
+	}
+	if req.Background != nil {
+		out["background"] = *req.Background
+	}
+	if req.Conversation != nil {
+		out["conversation"] = req.Conversation
+	}
+	if req.MaxToolCalls != nil {
+		out["max_tool_calls"] = *req.MaxToolCalls
+	}
+	if len(req.ClientMetadata) > 0 {
+		out["client_metadata"] = req.ClientMetadata
 	}
 	if len(out) == 0 {
 		return nil
@@ -830,8 +1017,16 @@ func parseResponsesInputItem(index int, obj map[string]any) ([]MessageParam, err
 	}
 
 	switch itemType {
-	case "function_call", "tool_call":
+	case "function_call", "tool_call", "custom_tool_call", "local_shell_call", "tool_search_call":
 		name := strings.TrimSpace(stringFromAny(obj["name"]))
+		if name == "" {
+			switch itemType {
+			case "local_shell_call":
+				name = "local_shell"
+			case "tool_search_call":
+				name = "tool_search"
+			}
+		}
 		if name == "" {
 			return nil, fmt.Errorf("input[%d]: function_call name is required", index)
 		}
@@ -844,6 +1039,8 @@ func parseResponsesInputItem(index int, obj map[string]any) ([]MessageParam, err
 			inputObj = parseToolInputValue(rawArgs)
 		} else if rawInput, ok := obj["input"]; ok {
 			inputObj = parseToolInputValue(rawInput)
+		} else if rawAction, ok := obj["action"]; ok {
+			inputObj = parseToolInputValue(rawAction)
 		}
 		return []MessageParam{
 			{
@@ -858,7 +1055,7 @@ func parseResponsesInputItem(index int, obj map[string]any) ([]MessageParam, err
 				},
 			},
 		}, nil
-	case "function_call_output", "tool_result":
+	case "function_call_output", "custom_tool_call_output", "tool_search_output", "tool_result":
 		callID := firstNonEmptyString(obj, "call_id", "tool_call_id", "id")
 		if callID == "" {
 			return nil, fmt.Errorf("input[%d]: function_call_output call_id is required", index)
@@ -1113,7 +1310,7 @@ func openAIChatChunkFromEvent(streamID, outwardModel string, created int64, ev o
 	}
 }
 
-func openAIResponseStreamEvent(respID string, ev orchestrator.StreamEvent) map[string]any {
+func openAIResponseStreamEvent(respID, itemID string, ev orchestrator.StreamEvent) map[string]any {
 	switch ev.Type {
 	case "content_block_delta":
 		if ev.DeltaJSON != "" {
@@ -1124,12 +1321,223 @@ func openAIResponseStreamEvent(respID string, ev orchestrator.StreamEvent) map[s
 			}
 		}
 		return map[string]any{
-			"type":        "response.output_text.delta",
-			"response_id": respID,
-			"delta":       ev.DeltaText,
+			"type":          "response.output_text.delta",
+			"response_id":   respID,
+			"item_id":       itemID,
+			"output_index":  0,
+			"content_index": 0,
+			"delta":         ev.DeltaText,
 		}
 	default:
 		return nil
+	}
+}
+
+type openAIResponseFunctionCallState struct {
+	ItemID      string
+	CallID      string
+	Name        string
+	OutputIndex int
+	Arguments   strings.Builder
+}
+
+func newOpenAIResponseFunctionCallState(respID string, ev orchestrator.StreamEvent) *openAIResponseFunctionCallState {
+	block := ev.Block
+	callID := strings.TrimSpace(block.ID)
+	if callID == "" {
+		callID = fmt.Sprintf("call_%s_%d", respID, ev.Index)
+	}
+	name := strings.TrimSpace(block.Name)
+	if name == "" {
+		name = "tool"
+	}
+	outputIndex := ev.Index
+	if outputIndex < 0 {
+		outputIndex = 0
+	}
+	return &openAIResponseFunctionCallState{
+		ItemID:      callID,
+		CallID:      callID,
+		Name:        name,
+		OutputIndex: outputIndex,
+	}
+}
+
+func openAIResponseFunctionCallAddedEvent(call *openAIResponseFunctionCallState) map[string]any {
+	return map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": call.OutputIndex,
+		"item": map[string]any{
+			"id":        call.ItemID,
+			"type":      "function_call",
+			"status":    "in_progress",
+			"name":      call.Name,
+			"arguments": "",
+			"call_id":   call.CallID,
+		},
+	}
+}
+
+func openAIResponseFunctionCallArgumentsDeltaEvent(respID string, call *openAIResponseFunctionCallState, delta string) map[string]any {
+	return map[string]any{
+		"type":         "response.function_call_arguments.delta",
+		"response_id":  respID,
+		"item_id":      call.ItemID,
+		"call_id":      call.CallID,
+		"output_index": call.OutputIndex,
+		"delta":        delta,
+	}
+}
+
+func openAIResponseFunctionCallDoneEvent(call *openAIResponseFunctionCallState) map[string]any {
+	return map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": call.OutputIndex,
+		"item": map[string]any{
+			"id":        call.ItemID,
+			"type":      "function_call",
+			"name":      call.Name,
+			"arguments": call.Arguments.String(),
+			"call_id":   call.CallID,
+		},
+	}
+}
+
+func openAIResponseCreatedEvent(respID, outwardModel string, created int64) map[string]any {
+	return map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":      respID,
+			"object":  "response",
+			"created": created,
+			"status":  "in_progress",
+			"model":   outwardModel,
+			"output":  []any{},
+		},
+	}
+}
+
+func openAIResponseTextStartEvents(itemID string) []map[string]any {
+	return []map[string]any{
+		{
+			"type":         "response.output_item.added",
+			"output_index": 0,
+			"item": map[string]any{
+				"id":      itemID,
+				"type":    "message",
+				"status":  "in_progress",
+				"role":    "assistant",
+				"content": []any{},
+			},
+		},
+		{
+			"type":          "response.content_part.added",
+			"item_id":       itemID,
+			"output_index":  0,
+			"content_index": 0,
+			"part": map[string]any{
+				"type": "output_text",
+				"text": "",
+			},
+		},
+	}
+}
+
+func openAIResponseTextDoneEvents(respID, itemID, text string) []map[string]any {
+	content := []any{
+		map[string]any{
+			"type": "output_text",
+			"text": text,
+		},
+	}
+	return []map[string]any{
+		{
+			"type":          "response.output_text.done",
+			"response_id":   respID,
+			"item_id":       itemID,
+			"output_index":  0,
+			"content_index": 0,
+			"text":          text,
+		},
+		{
+			"type":          "response.content_part.done",
+			"item_id":       itemID,
+			"output_index":  0,
+			"content_index": 0,
+			"part": map[string]any{
+				"type": "output_text",
+				"text": text,
+			},
+		},
+		{
+			"type":         "response.output_item.done",
+			"output_index": 0,
+			"item": map[string]any{
+				"id":      itemID,
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": content,
+			},
+		},
+	}
+}
+
+func openAIResponseCompletedEvent(respID, outwardModel string, created int64, text string, usage orchestrator.Usage) map[string]any {
+	itemID := "msg_" + respID
+	output := []any{}
+	if text != "" {
+		output = append(output, map[string]any{
+			"type":   "message",
+			"id":     itemID,
+			"status": "completed",
+			"role":   "assistant",
+			"content": []any{
+				map[string]any{
+					"type": "output_text",
+					"text": text,
+				},
+			},
+		})
+	}
+	return map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":      respID,
+			"object":  "response",
+			"created": created,
+			"status":  "completed",
+			"model":   outwardModel,
+			"output":  output,
+			"usage": map[string]any{
+				"input_tokens":  usage.InputTokens,
+				"output_tokens": usage.OutputTokens,
+				"total_tokens":  usage.InputTokens + usage.OutputTokens,
+			},
+		},
+	}
+}
+
+func openAIResponseFailedEvent(respID, outwardModel string, created int64, err error) map[string]any {
+	message := "stream failed"
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		message = err.Error()
+	}
+	return map[string]any{
+		"type": "response.failed",
+		"response": map[string]any{
+			"id":      respID,
+			"object":  "response",
+			"created": created,
+			"status":  "failed",
+			"model":   outwardModel,
+			"output":  []any{},
+			"error": map[string]any{
+				"type":    "server_error",
+				"code":    "stream_error",
+				"message": message,
+			},
+		},
 	}
 }
 

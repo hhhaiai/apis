@@ -225,6 +225,9 @@ func (a *HTTPAdapter) completeOpenAI(ctx context.Context, req orchestrator.Reque
 	if v, ok := req.Metadata["top_p"]; ok {
 		payload["top_p"] = v
 	}
+	if v, ok := req.Metadata["response_format"]; ok {
+		payload["response_format"] = v
+	}
 
 	useStream := a.forceStream || boolFromAny(req.Metadata["upstream_force_stream"])
 	if useStream {

@@ -1,16 +1,19 @@
 package gateway
 
 type OpenAIChatCompletionsRequest struct {
-	Model         string              `json:"model"`
-	Messages      []OpenAIChatMessage `json:"messages"`
-	MaxTokens     int                 `json:"max_tokens,omitempty"`
-	Stream        bool                `json:"stream,omitempty"`
-	StreamOptions map[string]any      `json:"stream_options,omitempty"`
-	Tools         []OpenAIChatTool    `json:"tools,omitempty"`
-	ToolChoice    any                 `json:"tool_choice,omitempty"`
-	Temperature   *float64            `json:"temperature,omitempty"`
-	TopP          *float64            `json:"top_p,omitempty"`
-	Metadata      map[string]any      `json:"metadata,omitempty"`
+	Model     string              `json:"model"`
+	Messages  []OpenAIChatMessage `json:"messages"`
+	MaxTokens int                 `json:"max_tokens,omitempty"`
+	// Groq and newer OpenAI-compatible clients may send max_completion_tokens.
+	MaxCompletionTokens int              `json:"max_completion_tokens,omitempty"`
+	Stream              bool             `json:"stream,omitempty"`
+	StreamOptions       map[string]any   `json:"stream_options,omitempty"`
+	Tools               []OpenAIChatTool `json:"tools,omitempty"`
+	ToolChoice          any              `json:"tool_choice,omitempty"`
+	Temperature         *float64         `json:"temperature,omitempty"`
+	TopP                *float64         `json:"top_p,omitempty"`
+	ResponseFormat      any              `json:"response_format,omitempty"`
+	Metadata            map[string]any   `json:"metadata,omitempty"`
 }
 
 type OpenAIChatMessage struct {
@@ -22,13 +25,27 @@ type OpenAIChatMessage struct {
 }
 
 type OpenAIChatTool struct {
-	Type     string                `json:"type"`
-	Function OpenAIChatToolDetails `json:"function"`
+	Type              string                        `json:"type"`
+	Function          OpenAIChatToolDetails         `json:"function"`
+	Name              string                        `json:"name,omitempty"`
+	Description       string                        `json:"description,omitempty"`
+	Strict            bool                          `json:"strict,omitempty"`
+	Parameters        map[string]any                `json:"parameters,omitempty"`
+	Tools             []OpenAIResponseNamespaceTool `json:"tools,omitempty"`
+	ExternalWebAccess bool                          `json:"external_web_access,omitempty"`
 }
 
 type OpenAIChatToolDetails struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+type OpenAIResponseNamespaceTool struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Strict      bool           `json:"strict,omitempty"`
 	Parameters  map[string]any `json:"parameters"`
 }
 
@@ -70,17 +87,45 @@ type OpenAIUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+type OpenAIModelsResponse struct {
+	Object string        `json:"object"`
+	Data   []OpenAIModel `json:"data"`
+}
+
+type OpenAIModel struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
 type OpenAIResponsesRequest struct {
-	Model           string           `json:"model"`
-	Input           any              `json:"input"`
-	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
-	Stream          bool             `json:"stream,omitempty"`
-	StreamOptions   map[string]any   `json:"stream_options,omitempty"`
-	Tools           []OpenAIChatTool `json:"tools,omitempty"`
-	ToolChoice      any              `json:"tool_choice,omitempty"`
-	Temperature     *float64         `json:"temperature,omitempty"`
-	TopP            *float64         `json:"top_p,omitempty"`
-	Metadata        map[string]any   `json:"metadata,omitempty"`
+	Model              string           `json:"model"`
+	Input              any              `json:"input"`
+	Instructions       any              `json:"instructions,omitempty"`
+	MaxOutputTokens    int              `json:"max_output_tokens,omitempty"`
+	Stream             bool             `json:"stream,omitempty"`
+	StreamOptions      map[string]any   `json:"stream_options,omitempty"`
+	Tools              []OpenAIChatTool `json:"tools,omitempty"`
+	ToolChoice         any              `json:"tool_choice,omitempty"`
+	Temperature        *float64         `json:"temperature,omitempty"`
+	TopP               *float64         `json:"top_p,omitempty"`
+	Metadata           map[string]any   `json:"metadata,omitempty"`
+	PreviousResponseID string           `json:"previous_response_id,omitempty"`
+	Reasoning          map[string]any   `json:"reasoning,omitempty"`
+	Text               map[string]any   `json:"text,omitempty"`
+	ParallelToolCalls  *bool            `json:"parallel_tool_calls,omitempty"`
+	Store              *bool            `json:"store,omitempty"`
+	Include            []string         `json:"include,omitempty"`
+	Truncation         string           `json:"truncation,omitempty"`
+	ServiceTier        string           `json:"service_tier,omitempty"`
+	PromptCacheKey     string           `json:"prompt_cache_key,omitempty"`
+	SafetyIdentifier   string           `json:"safety_identifier,omitempty"`
+	TopLogprobs        *int             `json:"top_logprobs,omitempty"`
+	Background         *bool            `json:"background,omitempty"`
+	Conversation       any              `json:"conversation,omitempty"`
+	MaxToolCalls       *int             `json:"max_tool_calls,omitempty"`
+	ClientMetadata     map[string]any   `json:"client_metadata,omitempty"`
 }
 
 type OpenAIResponsesResponse struct {
